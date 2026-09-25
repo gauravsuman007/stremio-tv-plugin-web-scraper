@@ -328,13 +328,21 @@ async function search(query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink
         url: "",
         resolveId: server.name,
         resolveKind: "hls",
-        // Real quality (resolution) is only known once resolve() actually
-        // captures the stream -- see the module doc above. Until then this
-        // is a source mirror name, not a quality tier; "4k" is the one
-        // quality signal cinejoy's server list exposes this cheaply.
-        quality: `CineJoy mirror: ${server.name}`,
-        title: displayTitle,
-        labels: server["4k"] ? ["4K"] : undefined
+        quality: server["4k"] ? "4K" : undefined,
+        /*
+            stremio-tv's own streams page only ever renders `title` (as
+            "release") -- `quality`/`labels` below feed a description field
+            nothing in the UI displays (see stremio-tv's `streaminfo.ts`:
+            `describe()` never reads `stream.description`). So the mirror
+            name -- the one thing that tells four otherwise-identical rows
+            apart -- has to live IN `title` itself, alongside the real
+            movie title TMDB resolved (never `query.title`, which is only
+            ever the raw content id). Real quality (resolution) is only
+            known once resolve() actually captures the stream, too late for
+            this list; "4k" is the one signal cinejoy's server list exposes
+            this cheaply, so it's folded in here rather than left unseen.
+        */
+        title: server["4k"] ? `${displayTitle} · ${server.name} · 4K` : `${displayTitle} · ${server.name}`
     }));
 }
 
@@ -402,7 +410,7 @@ async function resolve(resolveId: string, query: WebLinkQuery, ctx: ScraperConte
 const cinejoyScraper: WebLinkScraper = {
     id: "cinejoy",
     name: "CineJoy",
-    version: "1.2.1",
+    version: "1.2.2",
     search,
     resolve
 };
