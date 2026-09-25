@@ -302,15 +302,14 @@ async function resolveTmdbMatch(query: WebLinkQuery, fetchImpl: ScraperContext["
 }
 
 /**
- * LIST TIME: cheap and fast, no browser. cinejoy's actual stream URL only
- * comes out of driving a real browser to the watch page and picking a
- * server (see `resolve()` below) -- too slow to do for every server on
- * every title lookup, and the URL it yields is a short-lived signed token
- * that would often be dead by the time the user actually clicked it if
- * captured this far ahead of play time. So this only finds out WHICH
- * servers are up and returns one placeholder result per server, each
- * carrying `resolveId: server.name` -- the real capture happens in
- * `resolve()`, called once, right when the user picks this result.
+ * LIST TIME: cheap and fast, no browser -- just enough to know cinejoy has
+ * SOMETHING for this title (a real TMDB match and at least one server up).
+ * One placeholder only, tagged with this scraper's own name so its origin
+ * is visible on the row -- not one per mirror. Which mirror actually ends
+ * up serving the video is `resolve()`'s job entirely (see below): trying
+ * every mirror to find one that plays is exactly the kind of failure
+ * handling a viewer shouldn't have to do by hand, clicking through four
+ * near-identical rows to find the one that isn't dead.
  */
 async function search(query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink[]> {
     if (!findChromiumExecutable()) {
@@ -322,44 +321,40 @@ async function search(query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink
     if (!match) return [];
 
     const servers = (await listServers(ctx.fetch)).filter((s) => s.status === "ok");
+    if (!servers.length) return [];
+
     const displayTitle = match.year ? `${match.title} (${match.year})` : match.title;
 
-    return servers.map((server) => ({
-        url: "",
-        resolveId: server.name,
-        resolveKind: "hls",
-        quality: server["4k"] ? "4K" : undefined,
-        /*
-            stremio-tv's own streams page only ever renders `title` (as
-            "release") -- `quality`/`labels` below feed a description field
-            nothing in the UI displays (see stremio-tv's `streaminfo.ts`:
-            `describe()` never reads `stream.description`). So the mirror
-            name -- the one thing that tells four otherwise-identical rows
-            apart -- has to live IN `title` itself, alongside the real
-            movie title TMDB resolved (never `query.title`, which is only
-            ever the raw content id). Real quality (resolution) is only
-            known once resolve() actually captures the stream, too late for
-            this list; "4k" is the one signal cinejoy's server list exposes
-            this cheaply, so it's folded in here rather than left unseen.
-        */
-        title: server["4k"] ? `${displayTitle} · ${server.name} · 4K` : `${displayTitle} · ${server.name}`
-    }));
+    return [
+        {
+            url: "",
+            resolveId: "auto",
+            resolveKind: "hls",
+            title: `${displayTitle} · CineJoy`
+        }
+    ];
 }
 
 /**
- * PLAY TIME: the actual browser-driven capture, for exactly the one server
- * the user picked. Re-does the (cheap) TMDB match rather than threading it
- * through as state, since `resolve()` can be called well after `search()`
- * returned and owns no session with it.
+ * PLAY TIME: drives one browser through cinejoy's watch page and tries
+ * every up server in turn -- picking the FIRST one that both yields a
+ * captured media URL and expands into a real, fetchable playlist -- rather
+ * than committing to a single mirror at list time and leaving the viewer to
+ * retry by hand if it happens to be the one that's down. `resolveId` is
+ * unused: there is only ever one candidate now (see `search()` above), so
+ * there is nothing for it to select between.
  */
-async function resolve(resolveId: string, query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink | null> {
+async function resolve(_resolveId: string, query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink | null> {
     const executablePath = findChromiumExecutable();
     if (!executablePath) return null;
 
     const match = await resolveTmdbMatch(query, ctx.fetch);
     if (!match) return null;
 
-    const timeoutMs = Math.min(DEFAULT_PER_SERVER_TIMEOUT_MS, Math.max(5_000, ctx.budgetMs));
+    const servers = (await listServers(ctx.fetch)).filter((s) => s.status === "ok");
+    if (!servers.length) return null;
+
+    const perServerTimeoutMs = Math.min(DEFAULT_PER_SERVER_TIMEOUT_MS, Math.max(5_000, ctx.budgetMs / servers.length));
 
     const browser = await chromium.launch({
         headless: true,
@@ -377,31 +372,35 @@ async function resolve(resolveId: string, query: WebLinkQuery, ctx: ScraperConte
 
         await page.goto(watchUrl(match.tmdbId, match.mediaType, query.season, query.episode), {
             waitUntil: "domcontentloaded",
-            timeout: timeoutMs
+            timeout: perServerTimeoutMs
         });
-
-        const mediaUrl = await selectServerAndCapture(page, resolveId, timeoutMs);
-        if (!mediaUrl) return null;
-
-        let variants;
-        try {
-            variants = await expandMasterPlaylist(ctx.fetch, mediaUrl);
-        } catch {
-            return null; // dead/blocked mirror.
-        }
-
-        const best = variants[0]; // sorted by bandwidth, highest first.
-        if (!best) return null;
 
         const displayTitle = match.year ? `${match.title} (${match.year})` : match.title;
 
-        return {
-            url: best.url,
-            resolveKind: "hls",
-            quality: best.resolution ? `${best.resolution} · ${resolveId}` : `CineJoy mirror: ${resolveId}`,
-            title: displayTitle,
-            referrer: `${BASE_URL}/`
-        };
+        for (const server of servers) {
+            const mediaUrl = await selectServerAndCapture(page, server.name, perServerTimeoutMs);
+            if (!mediaUrl) continue; // this mirror never produced a media URL -- try the next one.
+
+            let variants;
+            try {
+                variants = await expandMasterPlaylist(ctx.fetch, mediaUrl);
+            } catch {
+                continue; // dead/blocked mirror -- try the next one.
+            }
+
+            const best = variants[0]; // sorted by bandwidth, highest first.
+            if (!best) continue;
+
+            return {
+                url: best.url,
+                resolveKind: "hls",
+                quality: best.resolution ? `${best.resolution} · ${server.name}` : `CineJoy mirror: ${server.name}`,
+                title: displayTitle,
+                referrer: `${BASE_URL}/`
+            };
+        }
+
+        return null; // every up server failed to produce a playable link.
     } finally {
         await browser.close();
     }
@@ -410,7 +409,7 @@ async function resolve(resolveId: string, query: WebLinkQuery, ctx: ScraperConte
 const cinejoyScraper: WebLinkScraper = {
     id: "cinejoy",
     name: "CineJoy",
-    version: "1.2.2",
+    version: "1.3.0",
     search,
     resolve
 };

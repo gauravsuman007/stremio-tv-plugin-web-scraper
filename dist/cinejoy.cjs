@@ -174,34 +174,25 @@ async function search(query, ctx) {
   const match = await resolveTmdbMatch(query, ctx.fetch);
   if (!match) return [];
   const servers = (await listServers(ctx.fetch)).filter((s) => s.status === "ok");
+  if (!servers.length) return [];
   const displayTitle = match.year ? `${match.title} (${match.year})` : match.title;
-  return servers.map((server) => ({
-    url: "",
-    resolveId: server.name,
-    resolveKind: "hls",
-    quality: server["4k"] ? "4K" : void 0,
-    /*
-        stremio-tv's own streams page only ever renders `title` (as
-        "release") -- `quality`/`labels` below feed a description field
-        nothing in the UI displays (see stremio-tv's `streaminfo.ts`:
-        `describe()` never reads `stream.description`). So the mirror
-        name -- the one thing that tells four otherwise-identical rows
-        apart -- has to live IN `title` itself, alongside the real
-        movie title TMDB resolved (never `query.title`, which is only
-        ever the raw content id). Real quality (resolution) is only
-        known once resolve() actually captures the stream, too late for
-        this list; "4k" is the one signal cinejoy's server list exposes
-        this cheaply, so it's folded in here rather than left unseen.
-    */
-    title: server["4k"] ? `${displayTitle} \xB7 ${server.name} \xB7 4K` : `${displayTitle} \xB7 ${server.name}`
-  }));
+  return [
+    {
+      url: "",
+      resolveId: "auto",
+      resolveKind: "hls",
+      title: `${displayTitle} \xB7 CineJoy`
+    }
+  ];
 }
-async function resolve(resolveId, query, ctx) {
+async function resolve(_resolveId, query, ctx) {
   const executablePath = findChromiumExecutable();
   if (!executablePath) return null;
   const match = await resolveTmdbMatch(query, ctx.fetch);
   if (!match) return null;
-  const timeoutMs = Math.min(DEFAULT_PER_SERVER_TIMEOUT_MS, Math.max(5e3, ctx.budgetMs));
+  const servers = (await listServers(ctx.fetch)).filter((s) => s.status === "ok");
+  if (!servers.length) return null;
+  const perServerTimeoutMs = Math.min(DEFAULT_PER_SERVER_TIMEOUT_MS, Math.max(5e3, ctx.budgetMs / servers.length));
   const browser = await import_playwright_core.chromium.launch({
     headless: true,
     executablePath,
@@ -215,26 +206,29 @@ async function resolve(resolveId, query, ctx) {
     const page = await context.newPage();
     await page.goto(watchUrl(match.tmdbId, match.mediaType, query.season, query.episode), {
       waitUntil: "domcontentloaded",
-      timeout: timeoutMs
+      timeout: perServerTimeoutMs
     });
-    const mediaUrl = await selectServerAndCapture(page, resolveId, timeoutMs);
-    if (!mediaUrl) return null;
-    let variants;
-    try {
-      variants = await expandMasterPlaylist(ctx.fetch, mediaUrl);
-    } catch {
-      return null;
-    }
-    const best = variants[0];
-    if (!best) return null;
     const displayTitle = match.year ? `${match.title} (${match.year})` : match.title;
-    return {
-      url: best.url,
-      resolveKind: "hls",
-      quality: best.resolution ? `${best.resolution} \xB7 ${resolveId}` : `CineJoy mirror: ${resolveId}`,
-      title: displayTitle,
-      referrer: `${BASE_URL}/`
-    };
+    for (const server of servers) {
+      const mediaUrl = await selectServerAndCapture(page, server.name, perServerTimeoutMs);
+      if (!mediaUrl) continue;
+      let variants;
+      try {
+        variants = await expandMasterPlaylist(ctx.fetch, mediaUrl);
+      } catch {
+        continue;
+      }
+      const best = variants[0];
+      if (!best) continue;
+      return {
+        url: best.url,
+        resolveKind: "hls",
+        quality: best.resolution ? `${best.resolution} \xB7 ${server.name}` : `CineJoy mirror: ${server.name}`,
+        title: displayTitle,
+        referrer: `${BASE_URL}/`
+      };
+    }
+    return null;
   } finally {
     await browser.close();
   }
@@ -242,7 +236,7 @@ async function resolve(resolveId, query, ctx) {
 var cinejoyScraper = {
   id: "cinejoy",
   name: "CineJoy",
-  version: "1.2.2",
+  version: "1.3.0",
   search,
   resolve
 };
