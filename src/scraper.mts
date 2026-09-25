@@ -125,6 +125,42 @@ async function tmdbSearch(
     return results;
 }
 
+/**
+ * stremio-tv's `extraStreamsFor` hands a plugin the raw content id (an
+ * IMDb id for anything from Torrentio-shaped addons) and NOT the title --
+ * see `stremio-tv-plugin-web-links/src/plugin.mts`'s own note on this gap.
+ * A free-text TMDB search for the literal string "tt1375666" obviously
+ * finds nothing, so when `query.id` looks like an IMDb id this resolves it
+ * directly via TMDB's "find by external id" endpoint instead of ever
+ * falling back to searching for the id itself.
+ */
+async function tmdbFindByImdbId(
+    fetchImpl: ScraperContext["fetch"],
+    imdbId: string
+): Promise<{ tmdbId: number; mediaType: "movie" | "tv"; year: number | null } | null> {
+    const url = new URL(`${TMDB_BASE}/find/${imdbId}`);
+    url.searchParams.set("api_key", TMDB_API_KEY);
+    url.searchParams.set("external_source", "imdb_id");
+
+    const response = await fetchImpl(url.toString());
+    if (!response.ok) throw new Error(`TMDB find failed: ${response.status}`);
+
+    const data = (await response.json()) as { movie_results: TmdbMultiResult[]; tv_results: TmdbMultiResult[] };
+    const movie = data.movie_results[0];
+    if (movie) {
+        const year = movie.release_date ? Number.parseInt(movie.release_date.slice(0, 4), 10) : null;
+        return { tmdbId: movie.id, mediaType: "movie", year: Number.isFinite(year) ? year : null };
+    }
+
+    const tv = data.tv_results[0];
+    if (tv) {
+        const year = tv.first_air_date ? Number.parseInt(tv.first_air_date.slice(0, 4), 10) : null;
+        return { tmdbId: tv.id, mediaType: "tv", year: Number.isFinite(year) ? year : null };
+    }
+
+    return null;
+}
+
 async function listServers(fetchImpl: ScraperContext["fetch"]): Promise<{ name: string; status: string }[]> {
     const response = await fetchImpl("https://api.wing.st/servers");
     if (!response.ok) throw new Error(`Failed to list servers: ${response.status}`);
@@ -246,8 +282,14 @@ async function search(query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink
     }
 
     const wantType = query.type === "series" || query.type === "tv" ? "tv" : "movie";
-    const matches = await tmdbSearch(ctx.fetch, query.title);
-    const match = matches.find((m) => m.mediaType === wantType) ?? matches[0];
+    const imdbId = /^tt\d+/.exec(query.id)?.[0];
+    let match: { tmdbId: number; mediaType: "movie" | "tv"; year: number | null } | null | undefined;
+    if (imdbId) {
+        match = await tmdbFindByImdbId(ctx.fetch, imdbId);
+    } else {
+        const matches = await tmdbSearch(ctx.fetch, query.title);
+        match = matches.find((m) => m.mediaType === wantType) ?? matches[0];
+    }
     if (!match) return [];
 
     const servers = (await listServers(ctx.fetch)).filter((s) => s.status === "ok");
@@ -306,7 +348,7 @@ async function search(query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink
 const cinejoyScraper: WebLinkScraper = {
     id: "cinejoy",
     name: "CineJoy",
-    version: "1.0.8",
+    version: "1.1.0",
     search
 };
 
