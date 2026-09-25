@@ -15,6 +15,8 @@ npm run search -- "unabomber"
 npm run resolve -- movie 1492640
 npm run resolve -- tv 1413 1 1
 npm run resolve -- movie 1492640 --all   # don't stop at the first playable server
+npm run playback-test -- "Inception"           # end-to-end: search -> real playback, timed
+npm run playback-test -- "Inception" 300       # ...then seek to 300s and verify it stuck
 ```
 
 `search` takes a free-text query and returns TMDB ids + media type for each
@@ -84,11 +86,62 @@ the player picked. If `servers` comes back empty and `failedServers` lists
 all of them, every mirror was down at the time; retry later, it's mirror
 availability on their end, not this tool.
 
+## Playback timing and resume seeking
+
+`testPlayback()` (`src/playback.ts`) is the end-to-end path: it calls
+`search()`, opens the top match's watch page, probes servers exactly like
+`resolveStreams()`, and additionally polls the page's own `<video>` element
+until it's actually advancing (`currentTime > 0` and `readyState >= 3`) --
+a manifest fetching successfully doesn't guarantee the browser can actually
+decode and play it, so this is a stronger check than `resolveStreams()`
+alone. `waitMs` is measured from the `search()` call to that first real
+frame, which is the number that matters for "how long until playback
+starts" -- it includes the TMDB search round-trip, every failed server tried
+along the way, and the real HLS startup buffering, not just manifest
+resolution.
+
+Measured against 5 mainstream titles (default 20-25s per-server timeout, one
+run, single data point each -- see caveat below):
+
+| Title | Result | Server | Wait to first frame |
+|---|---|---|---|
+| Inception | played | Nebula | 3.7s |
+| The Dark Knight | played | Nebula | 3.2s |
+| Interstellar | **no playable server** | -- | -- (all servers exhausted, ~33s) |
+| Avengers: Endgame | played | Nebula | 24.7s (first server it tried was slow/dead before Nebula came through) |
+| The Matrix | played | Nebula | 4.8s |
+
+4 of 5 played. Nebula was the server that ended up working every time in
+this run, but that's not something to hardcode -- rerunning Inception minutes
+later during resume testing hit a dead server first and only worked on
+retry. **Treat any single run's numbers as a sample from a flaky population,
+not a stable benchmark** -- the honest summary is "usually a few seconds
+once you land on a working mirror, occasionally 20-30s while several dead
+ones are tried and timed out first, and occasionally nothing at all."
+
+If `resumeSeconds` is passed, once real playback is confirmed it sets
+`video.currentTime` on the page directly and reads it back after a couple of
+seconds to confirm the seek actually stuck (`resume.verified`). Verified on:
+
+| Title | Requested | Actual after seek | Verified |
+|---|---|---|---|
+| Inception | 300s | 300.6s | yes |
+| The Matrix | 600s | 601.7s | yes |
+
+Both landed within ~1-2s of the request (HLS seeks snap to a segment
+boundary, so exact-second precision isn't expected). This is seeking the
+actual `<video>` element already loaded in cinejoy's own player page, not
+something baked into the returned URL -- there's no URL parameter that
+encodes a start offset for these streams. A caller that only wants the
+resolved links (via `resolveStreams()`, no browser session kept open) and
+plays them in its own player should instead set `currentTime` the same way
+once its own player has loaded the stream.
+
 ## Notes
 
-- `perServerTimeoutMs` (default 25s) on `resolveStreams()` controls how long
-  it waits per server before giving up and moving to the next one.
-- Pass `headed: true` to `resolveStreams()` to watch the browser while
-  debugging.
+- `perServerTimeoutMs` (default 25s) on `resolveStreams()`/`testPlayback()`
+  controls how long it waits per server before giving up and moving to the
+  next one.
+- Pass `headed: true` to watch the browser while debugging.
 - TMDB ids, not IMDB ids -- `search()` gives you the right id to pass into
   `resolve`.

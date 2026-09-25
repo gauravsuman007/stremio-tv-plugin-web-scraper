@@ -11,6 +11,7 @@
         "postinstall": "playwright install chromium",
         "search": "tsx cli.ts search",
         "resolve": "tsx cli.ts resolve",
+        "playback-test": "tsx cli.ts playback-test",
         "check": "tsc --noEmit",
         "build": "tsc"
     },

@@ -3,7 +3,7 @@ import { expandMasterPlaylist } from "./hls.js";
 import type { ResolveOptions, ResolveResult, ServerResult } from "./types.js";
 
 const BASE_URL = "https://cinejoy.pk";
-const DEFAULT_TIMEOUT_MS = 25_000;
+export const DEFAULT_TIMEOUT_MS = 25_000;
 
 const MASTER_PLAYLIST_RE = /\.m3u8(\?.*)?$/i;
 // Direct video files, but not fMP4/CMAF init or numbered segment fragments --
@@ -19,14 +19,19 @@ interface ServerInfo {
     status: string;
 }
 
-async function listServers(): Promise<ServerInfo[]> {
+export async function listServers(): Promise<ServerInfo[]> {
     const res = await fetch("https://api.wing.st/servers");
     if (!res.ok) throw new Error(`Failed to list servers: ${res.status}`);
     const data = (await res.json()) as { servers: ServerInfo[] };
     return data.servers;
 }
 
-function watchUrl(opts: ResolveOptions): string {
+export function watchUrl(opts: {
+    tmdbId: number;
+    mediaType: "movie" | "tv";
+    season?: number;
+    episode?: number;
+}): string {
     if (opts.mediaType === "movie") {
         return `${BASE_URL}/watch/movie/${opts.tmdbId}`;
     }
@@ -101,7 +106,7 @@ export async function resolveStreams(opts: ResolveOptions): Promise<ResolveResul
     };
 }
 
-async function selectServerAndCapture(
+export async function selectServerAndCapture(
     page: import("playwright").Page,
     serverName: string,
     timeoutMs: number,

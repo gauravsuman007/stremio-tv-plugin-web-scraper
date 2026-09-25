@@ -1,5 +1,6 @@
 import { search } from "./src/tmdb.js";
 import { resolveStreams } from "./src/cinejoy.js";
+import { testPlayback } from "./src/playback.js";
 import type { MediaType } from "./src/types.js";
 
 async function main() {
@@ -43,7 +44,24 @@ async function main() {
         return;
     }
 
-    console.error("Usage:\n  npm run search -- <title>\n  npm run resolve -- movie <tmdbId> [--all]\n  npm run resolve -- tv <tmdbId> <season> <episode> [--all]");
+    if (command === "playback-test") {
+        // npm run playback-test -- "<title>" [resumeSeconds]
+        const [title, resumeStr] = args;
+        if (!title) {
+            console.error('Usage: npm run playback-test -- "<title>" [resumeSeconds]');
+            process.exit(1);
+        }
+        const result = await testPlayback({
+            title,
+            resumeSeconds: resumeStr ? Number.parseFloat(resumeStr) : undefined,
+        });
+        console.log(JSON.stringify(result, null, 2));
+        return;
+    }
+
+    console.error(
+        "Usage:\n  npm run search -- <title>\n  npm run resolve -- movie <tmdbId> [--all]\n  npm run resolve -- tv <tmdbId> <season> <episode> [--all]\n  npm run playback-test -- \"<title>\" [resumeSeconds]",
+    );
     process.exit(1);
 }
 
