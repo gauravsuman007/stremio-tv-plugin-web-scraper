@@ -13,13 +13,15 @@
         "resolve": "tsx cli.ts resolve",
         "playback-test": "tsx cli.ts playback-test",
         "check": "tsc --noEmit",
-        "build": "tsc"
+        "build": "node scripts/build.mjs"
     },
     "dependencies": {
-        "playwright": "^1.48.0"
+        "playwright": "^1.48.0",
+        "playwright-core": "^1.48.0"
     },
     "devDependencies": {
         "@types/node": "^22.10.2",
+        "esbuild": "^0.24.0",
         "tsx": "^4.19.2",
         "typescript": "^5.7.2"
     }
