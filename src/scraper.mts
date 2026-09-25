@@ -306,7 +306,7 @@ async function search(query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink
 const cinejoyScraper: WebLinkScraper = {
     id: "cinejoy",
     name: "CineJoy",
-    version: "1.0.3",
+    version: "1.0.4",
     search
 };
 

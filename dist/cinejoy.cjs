@@ -194,7 +194,7 @@ async function search(query, ctx) {
 var cinejoyScraper = {
   id: "cinejoy",
   name: "CineJoy",
-  version: "1.0.3",
+  version: "1.0.4",
   search
 };
 var scraper_default = cinejoyScraper;
