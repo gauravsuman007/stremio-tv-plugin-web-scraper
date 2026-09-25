@@ -5,7 +5,14 @@ import type { ResolveOptions, ResolveResult, ServerResult } from "./types.js";
 const BASE_URL = "https://cinejoy.pk";
 const DEFAULT_TIMEOUT_MS = 25_000;
 
-const MEDIA_URL_RE = /\.(m3u8|mp4|mkv|webm)(\?.*)?$/i;
+const MASTER_PLAYLIST_RE = /\.m3u8(\?.*)?$/i;
+// Direct video files, but not fMP4/CMAF init or numbered segment fragments --
+// those show up as their own .mp4/.m4s requests alongside (or instead of) a
+// master playlist and aren't playable on their own.
+const DIRECT_FILE_RE = /\.(mp4|mkv|webm)(\?.*)?$/i;
+const SEGMENT_OR_INIT_RE = /(^|\/)(init|seg(ment)?[-_]?\d+|\d+)\.(mp4|m4s|webm)(\?.*)?$/i;
+/** how long to keep waiting after a direct-file candidate shows up, in case a master playlist follows it */
+const FILE_CANDIDATE_GRACE_MS = 4_000;
 
 interface ServerInfo {
     name: string;
@@ -36,6 +43,13 @@ function watchUrl(opts: ResolveOptions): string {
  * without a browser. Instead of reverse-engineering that, this watches the
  * browser's own network traffic for the media URL the player ends up
  * loading, per server.
+ *
+ * cinejoy's mirror pool is unreliable enough that "the player picked a URL"
+ * and "that URL actually plays" are different things (dead/Cloudflare-
+ * blocked mirrors are common). So each candidate is verified by actually
+ * fetching it server-side before being accepted -- this probes servers one
+ * at a time, in the order cinejoy itself lists them, and stops at the first
+ * one that's genuinely playable unless `probeAll` is set.
  */
 export async function resolveStreams(opts: ResolveOptions): Promise<ResolveResult> {
     const perServerTimeoutMs = opts.perServerTimeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -61,19 +75,19 @@ export async function resolveStreams(opts: ResolveOptions): Promise<ResolveResul
                 continue;
             }
 
+            // expandMasterPlaylist fetches the URL for real; if the mirror is
+            // dead (Cloudflare block, timeout, garbage response) this throws
+            // and the server is ruled out rather than reported as a hit.
+            let qualities;
             try {
-                const qualities = await expandMasterPlaylist(mediaUrl);
-                servers_.push({ server: server.name, masterUrl: mediaUrl, qualities });
+                qualities = await expandMasterPlaylist(mediaUrl);
             } catch {
-                // Couldn't expand the playlist server-side (mirror already died,
-                // or it wasn't an HLS master to begin with) -- still hand back
-                // the raw URL the player itself used.
-                servers_.push({
-                    server: server.name,
-                    masterUrl: mediaUrl,
-                    qualities: [{ resolution: null, bandwidth: null, url: mediaUrl }],
-                });
+                failedServers.push(server.name);
+                continue;
             }
+
+            servers_.push({ server: server.name, masterUrl: mediaUrl, qualities });
+            if (!opts.probeAll) break;
         }
     } finally {
         await browser.close();
@@ -92,10 +106,21 @@ async function selectServerAndCapture(
     serverName: string,
     timeoutMs: number,
 ): Promise<string | null> {
-    let resolveMedia: (url: string) => void;
-    const mediaUrlPromise = new Promise<string>((resolve) => {
+    let resolveMedia: (url: string | null) => void;
+    const donePromise = new Promise<string | null>((resolve) => {
         resolveMedia = resolve;
     });
+
+    let fileCandidate: string | null = null;
+    let graceTimer: ReturnType<typeof setTimeout> | null = null;
+    let settled = false;
+
+    const settle = (url: string | null) => {
+        if (settled) return;
+        settled = true;
+        if (graceTimer) clearTimeout(graceTimer);
+        resolveMedia(url);
+    };
 
     // Listen at the request stage, not response: the mirror domains cinejoy
     // proxies to frequently lack CORS headers, so the browser's own player
@@ -103,9 +128,22 @@ async function selectServerAndCapture(
     // fires at all). The request itself still tells us the URL the player
     // was after -- and a plain Node fetch, unlike the browser, isn't subject
     // to CORS, so it can succeed where the in-page player couldn't.
+    //
+    // A master playlist always wins immediately if one shows up. A direct
+    // file only wins after a short grace period with no playlist appearing --
+    // segment/init fragments of an HLS stream are also plain .mp4 requests,
+    // and racing ahead on the first one caught an init segment instead of the
+    // real master playlist during testing.
     const onRequest = (request: PwRequest) => {
         const url = request.url();
-        if (MEDIA_URL_RE.test(url)) resolveMedia(url);
+        if (MASTER_PLAYLIST_RE.test(url)) {
+            settle(url);
+            return;
+        }
+        if (!fileCandidate && DIRECT_FILE_RE.test(url) && !SEGMENT_OR_INIT_RE.test(url)) {
+            fileCandidate = url;
+            graceTimer = setTimeout(() => settle(fileCandidate), FILE_CANDIDATE_GRACE_MS);
+        }
     };
     page.on("request", onRequest);
 
@@ -117,12 +155,13 @@ async function selectServerAndCapture(
         await serverOption.click({ timeout: 5_000 });
 
         return await Promise.race([
-            mediaUrlPromise,
+            donePromise,
             new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
         ]);
     } catch {
         return null;
     } finally {
         page.off("request", onRequest);
+        if (graceTimer) clearTimeout(graceTimer);
     }
 }

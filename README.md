@@ -14,12 +14,15 @@ npm install   # also downloads a Playwright Chromium build
 npm run search -- "unabomber"
 npm run resolve -- movie 1492640
 npm run resolve -- tv 1413 1 1
+npm run resolve -- movie 1492640 --all   # don't stop at the first playable server
 ```
 
 `search` takes a free-text query and returns TMDB ids + media type for each
-match. `resolve` takes a TMDB id (and season/episode for TV) and returns,
-per available server, the resolved master playlist plus every quality
-variant it advertises:
+match. `resolve` takes a TMDB id (and season/episode for TV) and **probes
+cinejoy's servers one at a time, in the order cinejoy itself lists them, until
+one actually plays** -- each candidate media URL is fetched for real before
+being accepted, so a dead mirror gets skipped rather than returned. It stops
+at the first server that comes back playable:
 
 ```json
 {
@@ -27,7 +30,7 @@ variant it advertises:
   "mediaType": "movie",
   "servers": [
     {
-      "server": "Lisbon",
+      "server": "Nebula",
       "masterUrl": "https://.../playlist/xxx.m3u8",
       "qualities": [
         { "resolution": "1920x1080", "bandwidth": 4500000, "url": "https://.../1080p.m3u8" },
@@ -35,11 +38,15 @@ variant it advertises:
       ]
     }
   ],
-  "failedServers": ["Nebula", "Solara", "Athens"]
+  "failedServers": ["Lisbon"]
 }
 ```
 
-`failedServers` is normal, not a bug -- see below.
+`failedServers` lists whatever was ruled out on the way to that hit (dead
+mirror, timed out, or never produced a URL at all) -- normal, not a bug, see
+below. Pass `--all` (or `probeAll: true` to `resolveStreams()`) to keep going
+through every server instead of stopping at the first success, if you want
+every currently-working mirror rather than just one.
 
 ## Why browser automation
 
@@ -71,12 +78,11 @@ you pick a different one. One capture during development returned a real
 master-playlist URL that turned out to be already Cloudflare-blocked
 ("Website Access Blocked ... Terms of Service violations", HTTP 403) by the
 time it was fetched -- the mirror had died between when the site last
-refreshed its pointer and when this ran. `resolve` reflects all of this
-as-is: check `servers` for whichever ones actually came back with a fetchable
-playlist, and don't treat `failedServers` (or a single-quality fallback
-entry, meaning the playlist itself couldn't be fetched/parsed) as a bug to
-fix here. If every server fails, retry later -- it's mirror availability on
-their end, not this tool.
+refreshed its pointer and when this ran -- which is exactly why `resolve`
+verifies each candidate by fetching it for real instead of trusting the URL
+the player picked. If `servers` comes back empty and `failedServers` lists
+all of them, every mirror was down at the time; retry later, it's mirror
+availability on their end, not this tool.
 
 ## Notes
 

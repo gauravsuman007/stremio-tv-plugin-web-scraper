@@ -9,6 +9,23 @@ import type { QualityVariant } from "./types.js";
  * restriction since it isn't subject to the browser's same-origin policy.
  */
 export async function expandMasterPlaylist(masterUrl: string): Promise<QualityVariant[]> {
+    if (!/\.m3u8(\?.*)?$/i.test(masterUrl)) {
+        // Direct file (mp4/mkv/webm), not a playlist: confirm it's actually
+        // fetchable -- Range so a dead/blocked mirror is caught without
+        // pulling the whole file into memory to do it.
+        const res = await fetch(masterUrl, {
+            headers: { Referer: "https://cinejoy.pk/", Range: "bytes=0-1023" },
+        });
+        try {
+            if (!res.ok) {
+                throw new Error(`Failed to fetch video file: ${res.status} ${res.statusText}`);
+            }
+        } finally {
+            await res.body?.cancel().catch(() => {});
+        }
+        return [{ resolution: null, bandwidth: null, url: masterUrl }];
+    }
+
     const res = await fetch(masterUrl, {
         headers: { Referer: "https://cinejoy.pk/" },
     });
@@ -17,9 +34,13 @@ export async function expandMasterPlaylist(masterUrl: string): Promise<QualityVa
     }
     const text = await res.text();
 
+    if (!text.startsWith("#EXTM3U")) {
+        throw new Error("Response was not a valid HLS playlist");
+    }
+
     if (!text.includes("#EXT-X-STREAM-INF")) {
-        // Not a master playlist (either already a media playlist, or a direct
-        // file) -- treat the URL itself as the only quality.
+        // A valid but non-master playlist (already a single media playlist) --
+        // treat the URL itself as the only quality.
         return [{ resolution: null, bandwidth: null, url: masterUrl }];
     }
 

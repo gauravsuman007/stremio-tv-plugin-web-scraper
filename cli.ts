@@ -19,14 +19,16 @@ async function main() {
     if (command === "resolve") {
         // npm run resolve -- movie 1492640
         // npm run resolve -- tv 1413 1 1
-        const [mediaType, tmdbIdStr, seasonStr, episodeStr] = args;
+        // npm run resolve -- movie 1492640 --all   (probe every server, don't stop at the first hit)
+        const probeAll = args.includes("--all");
+        const [mediaType, tmdbIdStr, seasonStr, episodeStr] = args.filter((a) => a !== "--all");
         if (
             (mediaType !== "movie" && mediaType !== "tv") ||
             !tmdbIdStr ||
             (mediaType === "tv" && (!seasonStr || !episodeStr))
         ) {
             console.error(
-                "Usage:\n  npm run resolve -- movie <tmdbId>\n  npm run resolve -- tv <tmdbId> <season> <episode>",
+                "Usage:\n  npm run resolve -- movie <tmdbId> [--all]\n  npm run resolve -- tv <tmdbId> <season> <episode> [--all]",
             );
             process.exit(1);
         }
@@ -35,12 +37,13 @@ async function main() {
             tmdbId: Number.parseInt(tmdbIdStr, 10),
             season: seasonStr ? Number.parseInt(seasonStr, 10) : undefined,
             episode: episodeStr ? Number.parseInt(episodeStr, 10) : undefined,
+            probeAll,
         });
         console.log(JSON.stringify(result, null, 2));
         return;
     }
 
-    console.error("Usage:\n  npm run search -- <title>\n  npm run resolve -- movie <tmdbId>\n  npm run resolve -- tv <tmdbId> <season> <episode>");
+    console.error("Usage:\n  npm run search -- <title>\n  npm run resolve -- movie <tmdbId> [--all]\n  npm run resolve -- tv <tmdbId> <season> <episode> [--all]");
     process.exit(1);
 }
 

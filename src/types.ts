@@ -31,6 +31,12 @@ export interface ResolveOptions {
     episode?: number;
     /** how long to wait for each server to produce a media URL, in ms */
     perServerTimeoutMs?: number;
+    /**
+     * Keep probing every remaining server even after one plays, and return
+     * all playable ones. Default false: stop at the first server whose
+     * stream actually fetches successfully.
+     */
+    probeAll?: boolean;
     /** show the browser window instead of running headless (debugging) */
     headed?: boolean;
 }
@@ -39,6 +45,10 @@ export interface ResolveResult {
     tmdbId: number;
     mediaType: MediaType;
     servers: ServerResult[];
-    /** servers that were tried but never produced a media URL within the timeout */
+    /**
+     * Servers that were tried and ruled out, in order: either the player
+     * never produced a media URL for them within the timeout, or it did but
+     * the resulting playlist/file wasn't actually fetchable (dead mirror).
+     */
     failedServers: string[];
 }
