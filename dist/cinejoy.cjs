@@ -47,7 +47,8 @@ async function tmdbSearch(fetchImpl, query) {
     if (r.media_type !== "movie" && r.media_type !== "tv") continue;
     const dateStr = r.media_type === "movie" ? r.release_date : r.first_air_date;
     const year = dateStr ? Number.parseInt(dateStr.slice(0, 4), 10) : null;
-    results.push({ tmdbId: r.id, mediaType: r.media_type, year: Number.isFinite(year) ? year : null });
+    const title = (r.media_type === "movie" ? r.title : r.name) || query;
+    results.push({ tmdbId: r.id, mediaType: r.media_type, title, year: Number.isFinite(year) ? year : null });
   }
   return results;
 }
@@ -61,12 +62,12 @@ async function tmdbFindByImdbId(fetchImpl, imdbId) {
   const movie = data.movie_results[0];
   if (movie) {
     const year = movie.release_date ? Number.parseInt(movie.release_date.slice(0, 4), 10) : null;
-    return { tmdbId: movie.id, mediaType: "movie", year: Number.isFinite(year) ? year : null };
+    return { tmdbId: movie.id, mediaType: "movie", title: movie.title || imdbId, year: Number.isFinite(year) ? year : null };
   }
   const tv = data.tv_results[0];
   if (tv) {
     const year = tv.first_air_date ? Number.parseInt(tv.first_air_date.slice(0, 4), 10) : null;
-    return { tmdbId: tv.id, mediaType: "tv", year: Number.isFinite(year) ? year : null };
+    return { tmdbId: tv.id, mediaType: "tv", title: tv.name || imdbId, year: Number.isFinite(year) ? year : null };
   }
   return null;
 }
@@ -173,11 +174,18 @@ async function search(query, ctx) {
   const match = await resolveTmdbMatch(query, ctx.fetch);
   if (!match) return [];
   const servers = (await listServers(ctx.fetch)).filter((s) => s.status === "ok");
+  const displayTitle = match.year ? `${match.title} (${match.year})` : match.title;
   return servers.map((server) => ({
     url: "",
     resolveId: server.name,
-    quality: server.name,
-    title: `${query.title} (${server.name})`
+    resolveKind: "hls",
+    // Real quality (resolution) is only known once resolve() actually
+    // captures the stream -- see the module doc above. Until then this
+    // is a source mirror name, not a quality tier; "4k" is the one
+    // quality signal cinejoy's server list exposes this cheaply.
+    quality: `CineJoy mirror: ${server.name}`,
+    title: displayTitle,
+    labels: server["4k"] ? ["4K"] : void 0
   }));
 }
 async function resolve(resolveId, query, ctx) {
@@ -211,10 +219,12 @@ async function resolve(resolveId, query, ctx) {
     }
     const best = variants[0];
     if (!best) return null;
+    const displayTitle = match.year ? `${match.title} (${match.year})` : match.title;
     return {
       url: best.url,
-      quality: best.resolution ? `${best.resolution} \xB7 ${resolveId}` : resolveId,
-      title: `${query.title} (${resolveId})`,
+      resolveKind: "hls",
+      quality: best.resolution ? `${best.resolution} \xB7 ${resolveId}` : `CineJoy mirror: ${resolveId}`,
+      title: displayTitle,
       referrer: `${BASE_URL}/`
     };
   } finally {
@@ -224,7 +234,7 @@ async function resolve(resolveId, query, ctx) {
 var cinejoyScraper = {
   id: "cinejoy",
   name: "CineJoy",
-  version: "1.2.0",
+  version: "1.2.1",
   search,
   resolve
 };

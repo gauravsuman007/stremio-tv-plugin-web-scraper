@@ -105,10 +105,17 @@ interface TmdbMultiResult {
     first_air_date?: string;
 }
 
-async function tmdbSearch(
-    fetchImpl: ScraperContext["fetch"],
-    query: string
-): Promise<{ tmdbId: number; mediaType: "movie" | "tv"; year: number | null }[]> {
+interface TmdbMatch {
+    tmdbId: number;
+    mediaType: "movie" | "tv";
+    /** The real title, e.g. "Zootopia" -- NOT `query.title`, which is only
+     *  ever the raw content id (see `resolveTmdbMatch`'s doc comment). This
+     *  is what a result's display name is actually built from. */
+    title: string;
+    year: number | null;
+}
+
+async function tmdbSearch(fetchImpl: ScraperContext["fetch"], query: string): Promise<TmdbMatch[]> {
     const url = new URL(`${TMDB_BASE}/search/multi`);
     url.searchParams.set("api_key", TMDB_API_KEY);
     url.searchParams.set("language", "en-US");
@@ -119,13 +126,14 @@ async function tmdbSearch(
     if (!response.ok) throw new Error(`TMDB search failed: ${response.status}`);
 
     const data = (await response.json()) as { results: TmdbMultiResult[] };
-    const results: { tmdbId: number; mediaType: "movie" | "tv"; year: number | null }[] = [];
+    const results: TmdbMatch[] = [];
 
     for (const r of data.results) {
         if (r.media_type !== "movie" && r.media_type !== "tv") continue;
         const dateStr = r.media_type === "movie" ? r.release_date : r.first_air_date;
         const year = dateStr ? Number.parseInt(dateStr.slice(0, 4), 10) : null;
-        results.push({ tmdbId: r.id, mediaType: r.media_type, year: Number.isFinite(year) ? year : null });
+        const title = (r.media_type === "movie" ? r.title : r.name) || query;
+        results.push({ tmdbId: r.id, mediaType: r.media_type, title, year: Number.isFinite(year) ? year : null });
     }
     return results;
 }
@@ -139,10 +147,7 @@ async function tmdbSearch(
  * directly via TMDB's "find by external id" endpoint instead of ever
  * falling back to searching for the id itself.
  */
-async function tmdbFindByImdbId(
-    fetchImpl: ScraperContext["fetch"],
-    imdbId: string
-): Promise<{ tmdbId: number; mediaType: "movie" | "tv"; year: number | null } | null> {
+async function tmdbFindByImdbId(fetchImpl: ScraperContext["fetch"], imdbId: string): Promise<TmdbMatch | null> {
     const url = new URL(`${TMDB_BASE}/find/${imdbId}`);
     url.searchParams.set("api_key", TMDB_API_KEY);
     url.searchParams.set("external_source", "imdb_id");
@@ -154,22 +159,30 @@ async function tmdbFindByImdbId(
     const movie = data.movie_results[0];
     if (movie) {
         const year = movie.release_date ? Number.parseInt(movie.release_date.slice(0, 4), 10) : null;
-        return { tmdbId: movie.id, mediaType: "movie", year: Number.isFinite(year) ? year : null };
+        return { tmdbId: movie.id, mediaType: "movie", title: movie.title || imdbId, year: Number.isFinite(year) ? year : null };
     }
 
     const tv = data.tv_results[0];
     if (tv) {
         const year = tv.first_air_date ? Number.parseInt(tv.first_air_date.slice(0, 4), 10) : null;
-        return { tmdbId: tv.id, mediaType: "tv", year: Number.isFinite(year) ? year : null };
+        return { tmdbId: tv.id, mediaType: "tv", title: tv.name || imdbId, year: Number.isFinite(year) ? year : null };
     }
 
     return null;
 }
 
-async function listServers(fetchImpl: ScraperContext["fetch"]): Promise<{ name: string; status: string }[]> {
+interface CinejoyServer {
+    name: string;
+    status: string;
+    /** Cheap, list-time quality signal -- the only one available without
+     *  driving a browser (see the module doc above `search()`). */
+    "4k": boolean;
+}
+
+async function listServers(fetchImpl: ScraperContext["fetch"]): Promise<CinejoyServer[]> {
     const response = await fetchImpl("https://api.wing.st/servers");
     if (!response.ok) throw new Error(`Failed to list servers: ${response.status}`);
-    const data = (await response.json()) as { servers: { name: string; status: string }[] };
+    const data = (await response.json()) as { servers: CinejoyServer[] };
     return data.servers;
 }
 
@@ -279,10 +292,7 @@ function findChromiumExecutable(): string | undefined {
     return undefined;
 }
 
-async function resolveTmdbMatch(
-    query: WebLinkQuery,
-    fetchImpl: ScraperContext["fetch"]
-): Promise<{ tmdbId: number; mediaType: "movie" | "tv"; year: number | null } | null> {
+async function resolveTmdbMatch(query: WebLinkQuery, fetchImpl: ScraperContext["fetch"]): Promise<TmdbMatch | null> {
     const wantType = query.type === "series" || query.type === "tv" ? "tv" : "movie";
     const imdbId = /^tt\d+/.exec(query.id)?.[0];
     if (imdbId) return tmdbFindByImdbId(fetchImpl, imdbId);
@@ -312,12 +322,19 @@ async function search(query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink
     if (!match) return [];
 
     const servers = (await listServers(ctx.fetch)).filter((s) => s.status === "ok");
+    const displayTitle = match.year ? `${match.title} (${match.year})` : match.title;
 
     return servers.map((server) => ({
         url: "",
         resolveId: server.name,
-        quality: server.name,
-        title: `${query.title} (${server.name})`
+        resolveKind: "hls",
+        // Real quality (resolution) is only known once resolve() actually
+        // captures the stream -- see the module doc above. Until then this
+        // is a source mirror name, not a quality tier; "4k" is the one
+        // quality signal cinejoy's server list exposes this cheaply.
+        quality: `CineJoy mirror: ${server.name}`,
+        title: displayTitle,
+        labels: server["4k"] ? ["4K"] : undefined
     }));
 }
 
@@ -368,10 +385,13 @@ async function resolve(resolveId: string, query: WebLinkQuery, ctx: ScraperConte
         const best = variants[0]; // sorted by bandwidth, highest first.
         if (!best) return null;
 
+        const displayTitle = match.year ? `${match.title} (${match.year})` : match.title;
+
         return {
             url: best.url,
-            quality: best.resolution ? `${best.resolution} · ${resolveId}` : resolveId,
-            title: `${query.title} (${resolveId})`,
+            resolveKind: "hls",
+            quality: best.resolution ? `${best.resolution} · ${resolveId}` : `CineJoy mirror: ${resolveId}`,
+            title: displayTitle,
             referrer: `${BASE_URL}/`
         };
     } finally {
@@ -382,7 +402,7 @@ async function resolve(resolveId: string, query: WebLinkQuery, ctx: ScraperConte
 const cinejoyScraper: WebLinkScraper = {
     id: "cinejoy",
     name: "CineJoy",
-    version: "1.2.0",
+    version: "1.2.1",
     search,
     resolve
 };
