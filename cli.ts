@@ -45,22 +45,19 @@ async function main() {
     }
 
     if (command === "playback-test") {
-        // npm run playback-test -- "<title>" [resumeSeconds]
-        const [title, resumeStr] = args;
+        // npm run playback-test -- "<title>"
+        const [title] = args;
         if (!title) {
-            console.error('Usage: npm run playback-test -- "<title>" [resumeSeconds]');
+            console.error('Usage: npm run playback-test -- "<title>"');
             process.exit(1);
         }
-        const result = await testPlayback({
-            title,
-            resumeSeconds: resumeStr ? Number.parseFloat(resumeStr) : undefined,
-        });
+        const result = await testPlayback({ title });
         console.log(JSON.stringify(result, null, 2));
         return;
     }
 
     console.error(
-        "Usage:\n  npm run search -- <title>\n  npm run resolve -- movie <tmdbId> [--all]\n  npm run resolve -- tv <tmdbId> <season> <episode> [--all]\n  npm run playback-test -- \"<title>\" [resumeSeconds]",
+        "Usage:\n  npm run search -- <title>\n  npm run resolve -- movie <tmdbId> [--all]\n  npm run resolve -- tv <tmdbId> <season> <episode> [--all]\n  npm run playback-test -- \"<title>\"",
     );
     process.exit(1);
 }

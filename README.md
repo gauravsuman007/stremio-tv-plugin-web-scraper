@@ -16,7 +16,6 @@ npm run resolve -- movie 1492640
 npm run resolve -- tv 1413 1 1
 npm run resolve -- movie 1492640 --all   # don't stop at the first playable server
 npm run playback-test -- "Inception"           # end-to-end: search -> real playback, timed
-npm run playback-test -- "Inception" 300       # ...then seek to 300s and verify it stuck
 ```
 
 `search` takes a free-text query and returns TMDB ids + media type for each
@@ -86,7 +85,7 @@ the player picked. If `servers` comes back empty and `failedServers` lists
 all of them, every mirror was down at the time; retry later, it's mirror
 availability on their end, not this tool.
 
-## Playback timing and resume seeking
+## Playback timing
 
 `testPlayback()` (`src/playback.ts`) is the end-to-end path: it calls
 `search()`, opens the top match's watch page, probes servers exactly like
@@ -112,30 +111,12 @@ run, single data point each -- see caveat below):
 | The Matrix | played | Nebula | 4.8s |
 
 4 of 5 played. Nebula was the server that ended up working every time in
-this run, but that's not something to hardcode -- rerunning Inception minutes
-later during resume testing hit a dead server first and only worked on
-retry. **Treat any single run's numbers as a sample from a flaky population,
+this run, but that's not something to hardcode -- rerunning Inception a few
+minutes later hit a dead server first and only worked on retry. **Treat any
+single run's numbers as a sample from a flaky population,
 not a stable benchmark** -- the honest summary is "usually a few seconds
 once you land on a working mirror, occasionally 20-30s while several dead
 ones are tried and timed out first, and occasionally nothing at all."
-
-If `resumeSeconds` is passed, once real playback is confirmed it sets
-`video.currentTime` on the page directly and reads it back after a couple of
-seconds to confirm the seek actually stuck (`resume.verified`). Verified on:
-
-| Title | Requested | Actual after seek | Verified |
-|---|---|---|---|
-| Inception | 300s | 300.6s | yes |
-| The Matrix | 600s | 601.7s | yes |
-
-Both landed within ~1-2s of the request (HLS seeks snap to a segment
-boundary, so exact-second precision isn't expected). This is seeking the
-actual `<video>` element already loaded in cinejoy's own player page, not
-something baked into the returned URL -- there's no URL parameter that
-encodes a start offset for these streams. A caller that only wants the
-resolved links (via `resolveStreams()`, no browser session kept open) and
-plays them in its own player should instead set `currentTime` the same way
-once its own player has loaded the stream.
 
 ## Notes
 

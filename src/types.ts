@@ -53,22 +53,12 @@ export interface ResolveResult {
     failedServers: string[];
 }
 
-export interface ResumeVerification {
-    requestedSeconds: number;
-    /** currentTime actually read back from the <video> element after seeking */
-    actualSeconds: number | null;
-    /** whether actualSeconds landed within tolerance of requestedSeconds */
-    verified: boolean;
-}
-
 export interface PlaybackTestOptions {
     title: string;
     /** restrict the search match to this media type; defaults to the first movie or tv hit */
     mediaType?: MediaType;
     season?: number;
     episode?: number;
-    /** if set, seeks the page's <video> element to this offset (seconds) once playback starts, and verifies it stuck */
-    resumeSeconds?: number;
     perServerTimeoutMs?: number;
     headed?: boolean;
 }
@@ -81,6 +71,5 @@ export interface PlaybackTestResult {
     server: string | null;
     /** wall-clock ms from the search() call to the first observed video frame */
     waitMs: number | null;
-    resume: ResumeVerification | null;
     error?: string;
 }

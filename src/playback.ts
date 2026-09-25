@@ -3,9 +3,8 @@ import type { Page } from "playwright";
 import { DEFAULT_TIMEOUT_MS, listServers, selectServerAndCapture, watchUrl } from "./cinejoy.js";
 import { expandMasterPlaylist } from "./hls.js";
 import { search } from "./tmdb.js";
-import type { PlaybackTestOptions, PlaybackTestResult, ResumeVerification } from "./types.js";
+import type { PlaybackTestOptions, PlaybackTestResult } from "./types.js";
 
-const RESUME_SEEK_TOLERANCE_SECONDS = 5;
 const PLAYBACK_START_POLL_MS = 250;
 
 interface VideoState {
@@ -40,29 +39,12 @@ async function waitForRealPlaybackStart(page: Page, timeoutMs: number): Promise<
     return false;
 }
 
-async function seekAndVerify(page: Page, seconds: number): Promise<ResumeVerification> {
-    await page.evaluate((s) => {
-        const v = document.querySelector("video");
-        if (v) v.currentTime = s;
-    }, seconds);
-
-    // Give the player a moment to honor the seek and resume advancing from there.
-    await page.waitForTimeout(2_000);
-    const state = await readVideoState(page);
-    const actualSeconds = state?.currentTime ?? null;
-    const verified =
-        actualSeconds != null && Math.abs(actualSeconds - seconds) <= RESUME_SEEK_TOLERANCE_SECONDS;
-
-    return { requestedSeconds: seconds, actualSeconds, verified };
-}
-
 /**
  * End-to-end probe: search for a title, drive cinejoy's real player through
  * each server until one is actually playing video (not just until a media
  * URL was captured -- codec/mirror issues can still stall a page's <video>
  * even after the manifest itself checks out), and time the whole thing from
- * the search() call. Optionally seeks to `resumeSeconds` once playback
- * starts and confirms the seek stuck.
+ * the search() call.
  */
 export async function testPlayback(opts: PlaybackTestOptions): Promise<PlaybackTestResult> {
     const perServerTimeoutMs = opts.perServerTimeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -77,7 +59,6 @@ export async function testPlayback(opts: PlaybackTestOptions): Promise<PlaybackT
             mediaType: null,
             server: null,
             waitMs: null,
-            resume: null,
             error: "no search match",
         };
     }
@@ -115,7 +96,6 @@ export async function testPlayback(opts: PlaybackTestOptions): Promise<PlaybackT
             if (!started) continue;
 
             const waitMs = Date.now() - t0;
-            const resume = opts.resumeSeconds != null ? await seekAndVerify(page, opts.resumeSeconds) : null;
 
             return {
                 title: opts.title,
@@ -123,7 +103,6 @@ export async function testPlayback(opts: PlaybackTestOptions): Promise<PlaybackT
                 mediaType: match.mediaType,
                 server: server.name,
                 waitMs,
-                resume,
             };
         }
 
@@ -133,7 +112,6 @@ export async function testPlayback(opts: PlaybackTestOptions): Promise<PlaybackT
             mediaType: match.mediaType,
             server: null,
             waitMs: null,
-            resume: null,
             error: "no server produced real playback",
         };
     } finally {
