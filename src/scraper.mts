@@ -55,6 +55,10 @@ interface WebLinkQuery {
 
 interface WebLink {
     url: string;
+    /** See `stremio-tv-plugin-web-links/src/scraper.mts`'s module doc. Set
+     *  on every result `search()` returns here -- see the note above
+     *  `search()` below for why. */
+    resolveId?: string;
     quality?: string;
     title?: string;
     size?: string;
@@ -77,6 +81,7 @@ interface WebLinkScraper {
     name: string;
     version?: string;
     search(query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink[]>;
+    resolve(resolveId: string, query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink | null>;
 }
 
 /* ---- cinejoy-specific pieces, adapted from tmdb.ts/cinejoy.ts/hls.ts -- */
@@ -274,28 +279,62 @@ function findChromiumExecutable(): string | undefined {
     return undefined;
 }
 
+async function resolveTmdbMatch(
+    query: WebLinkQuery,
+    fetchImpl: ScraperContext["fetch"]
+): Promise<{ tmdbId: number; mediaType: "movie" | "tv"; year: number | null } | null> {
+    const wantType = query.type === "series" || query.type === "tv" ? "tv" : "movie";
+    const imdbId = /^tt\d+/.exec(query.id)?.[0];
+    if (imdbId) return tmdbFindByImdbId(fetchImpl, imdbId);
+
+    const matches = await tmdbSearch(fetchImpl, query.title);
+    return matches.find((m) => m.mediaType === wantType) ?? matches[0] ?? null;
+}
+
+/**
+ * LIST TIME: cheap and fast, no browser. cinejoy's actual stream URL only
+ * comes out of driving a real browser to the watch page and picking a
+ * server (see `resolve()` below) -- too slow to do for every server on
+ * every title lookup, and the URL it yields is a short-lived signed token
+ * that would often be dead by the time the user actually clicked it if
+ * captured this far ahead of play time. So this only finds out WHICH
+ * servers are up and returns one placeholder result per server, each
+ * carrying `resolveId: server.name` -- the real capture happens in
+ * `resolve()`, called once, right when the user picks this result.
+ */
 async function search(query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink[]> {
-    const executablePath = findChromiumExecutable();
-    if (!executablePath) {
+    if (!findChromiumExecutable()) {
         console.warn("[cinejoy] no Chromium binary found (set CHROMIUM_PATH, or apk add chromium) -- skipping");
         return [];
     }
 
-    const wantType = query.type === "series" || query.type === "tv" ? "tv" : "movie";
-    const imdbId = /^tt\d+/.exec(query.id)?.[0];
-    let match: { tmdbId: number; mediaType: "movie" | "tv"; year: number | null } | null | undefined;
-    if (imdbId) {
-        match = await tmdbFindByImdbId(ctx.fetch, imdbId);
-    } else {
-        const matches = await tmdbSearch(ctx.fetch, query.title);
-        match = matches.find((m) => m.mediaType === wantType) ?? matches[0];
-    }
+    const match = await resolveTmdbMatch(query, ctx.fetch);
     if (!match) return [];
 
     const servers = (await listServers(ctx.fetch)).filter((s) => s.status === "ok");
-    if (!servers.length) return [];
 
-    const perServerTimeoutMs = Math.min(DEFAULT_PER_SERVER_TIMEOUT_MS, Math.max(3_000, ctx.budgetMs / Math.max(1, servers.length)));
+    return servers.map((server) => ({
+        url: "",
+        resolveId: server.name,
+        quality: server.name,
+        title: `${query.title} (${server.name})`
+    }));
+}
+
+/**
+ * PLAY TIME: the actual browser-driven capture, for exactly the one server
+ * the user picked. Re-does the (cheap) TMDB match rather than threading it
+ * through as state, since `resolve()` can be called well after `search()`
+ * returned and owns no session with it.
+ */
+async function resolve(resolveId: string, query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink | null> {
+    const executablePath = findChromiumExecutable();
+    if (!executablePath) return null;
+
+    const match = await resolveTmdbMatch(query, ctx.fetch);
+    if (!match) return null;
+
+    const timeoutMs = Math.min(DEFAULT_PER_SERVER_TIMEOUT_MS, Math.max(5_000, ctx.budgetMs));
 
     const browser = await chromium.launch({
         headless: true,
@@ -303,8 +342,6 @@ async function search(query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink
         args: ["--no-sandbox", "--disable-dev-shm-usage"],
         proxy: ctx.proxyUrl ? { server: ctx.proxyUrl } : undefined
     });
-
-    const links: WebLink[] = [];
 
     try {
         const context = await browser.newContext({
@@ -315,41 +352,39 @@ async function search(query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink
 
         await page.goto(watchUrl(match.tmdbId, match.mediaType, query.season, query.episode), {
             waitUntil: "domcontentloaded",
-            timeout: perServerTimeoutMs
+            timeout: timeoutMs
         });
 
-        for (const server of servers) {
-            const mediaUrl = await selectServerAndCapture(page, server.name, perServerTimeoutMs);
-            if (!mediaUrl) continue;
+        const mediaUrl = await selectServerAndCapture(page, resolveId, timeoutMs);
+        if (!mediaUrl) return null;
 
-            let variants;
-            try {
-                variants = await expandMasterPlaylist(ctx.fetch, mediaUrl);
-            } catch {
-                continue; // dead/blocked mirror -- try the next server.
-            }
-
-            for (const variant of variants) {
-                links.push({
-                    url: variant.url,
-                    quality: variant.resolution ? `${variant.resolution} · ${server.name}` : server.name,
-                    title: `${query.title} (${server.name})`,
-                    referrer: `${BASE_URL}/`
-                });
-            }
+        let variants;
+        try {
+            variants = await expandMasterPlaylist(ctx.fetch, mediaUrl);
+        } catch {
+            return null; // dead/blocked mirror.
         }
+
+        const best = variants[0]; // sorted by bandwidth, highest first.
+        if (!best) return null;
+
+        return {
+            url: best.url,
+            quality: best.resolution ? `${best.resolution} · ${resolveId}` : resolveId,
+            title: `${query.title} (${resolveId})`,
+            referrer: `${BASE_URL}/`
+        };
     } finally {
         await browser.close();
     }
-
-    return links;
 }
 
 const cinejoyScraper: WebLinkScraper = {
     id: "cinejoy",
     name: "CineJoy",
-    version: "1.1.0",
-    search
+    version: "1.2.0",
+    search,
+    resolve
 };
 
 export default cinejoyScraper;

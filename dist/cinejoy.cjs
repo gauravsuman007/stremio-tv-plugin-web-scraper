@@ -82,8 +82,8 @@ function watchUrl(tmdbId, mediaType, season, episode) {
 }
 async function selectServerAndCapture(page, serverName, timeoutMs) {
   let resolveMedia;
-  const donePromise = new Promise((resolve) => {
-    resolveMedia = resolve;
+  const donePromise = new Promise((resolve2) => {
+    resolveMedia = resolve2;
   });
   let fileCandidate = null;
   let graceTimer = null;
@@ -111,7 +111,7 @@ async function selectServerAndCapture(page, serverName, timeoutMs) {
     await page.getByText(serverName, { exact: true }).first().click({ timeout: 5e3 });
     return await Promise.race([
       donePromise,
-      new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs))
+      new Promise((resolve2) => setTimeout(() => resolve2(null), timeoutMs))
     ]);
   } catch {
     return null;
@@ -158,32 +158,40 @@ function findChromiumExecutable() {
   }
   return void 0;
 }
+async function resolveTmdbMatch(query, fetchImpl) {
+  const wantType = query.type === "series" || query.type === "tv" ? "tv" : "movie";
+  const imdbId = /^tt\d+/.exec(query.id)?.[0];
+  if (imdbId) return tmdbFindByImdbId(fetchImpl, imdbId);
+  const matches = await tmdbSearch(fetchImpl, query.title);
+  return matches.find((m) => m.mediaType === wantType) ?? matches[0] ?? null;
+}
 async function search(query, ctx) {
-  const executablePath = findChromiumExecutable();
-  if (!executablePath) {
+  if (!findChromiumExecutable()) {
     console.warn("[cinejoy] no Chromium binary found (set CHROMIUM_PATH, or apk add chromium) -- skipping");
     return [];
   }
-  const wantType = query.type === "series" || query.type === "tv" ? "tv" : "movie";
-  const imdbId = /^tt\d+/.exec(query.id)?.[0];
-  let match;
-  if (imdbId) {
-    match = await tmdbFindByImdbId(ctx.fetch, imdbId);
-  } else {
-    const matches = await tmdbSearch(ctx.fetch, query.title);
-    match = matches.find((m) => m.mediaType === wantType) ?? matches[0];
-  }
+  const match = await resolveTmdbMatch(query, ctx.fetch);
   if (!match) return [];
   const servers = (await listServers(ctx.fetch)).filter((s) => s.status === "ok");
-  if (!servers.length) return [];
-  const perServerTimeoutMs = Math.min(DEFAULT_PER_SERVER_TIMEOUT_MS, Math.max(3e3, ctx.budgetMs / Math.max(1, servers.length)));
+  return servers.map((server) => ({
+    url: "",
+    resolveId: server.name,
+    quality: server.name,
+    title: `${query.title} (${server.name})`
+  }));
+}
+async function resolve(resolveId, query, ctx) {
+  const executablePath = findChromiumExecutable();
+  if (!executablePath) return null;
+  const match = await resolveTmdbMatch(query, ctx.fetch);
+  if (!match) return null;
+  const timeoutMs = Math.min(DEFAULT_PER_SERVER_TIMEOUT_MS, Math.max(5e3, ctx.budgetMs));
   const browser = await import_playwright_core.chromium.launch({
     headless: true,
     executablePath,
     args: ["--no-sandbox", "--disable-dev-shm-usage"],
     proxy: ctx.proxyUrl ? { server: ctx.proxyUrl } : void 0
   });
-  const links = [];
   try {
     const context = await browser.newContext({
       userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
@@ -191,35 +199,33 @@ async function search(query, ctx) {
     const page = await context.newPage();
     await page.goto(watchUrl(match.tmdbId, match.mediaType, query.season, query.episode), {
       waitUntil: "domcontentloaded",
-      timeout: perServerTimeoutMs
+      timeout: timeoutMs
     });
-    for (const server of servers) {
-      const mediaUrl = await selectServerAndCapture(page, server.name, perServerTimeoutMs);
-      if (!mediaUrl) continue;
-      let variants;
-      try {
-        variants = await expandMasterPlaylist(ctx.fetch, mediaUrl);
-      } catch {
-        continue;
-      }
-      for (const variant of variants) {
-        links.push({
-          url: variant.url,
-          quality: variant.resolution ? `${variant.resolution} \xB7 ${server.name}` : server.name,
-          title: `${query.title} (${server.name})`,
-          referrer: `${BASE_URL}/`
-        });
-      }
+    const mediaUrl = await selectServerAndCapture(page, resolveId, timeoutMs);
+    if (!mediaUrl) return null;
+    let variants;
+    try {
+      variants = await expandMasterPlaylist(ctx.fetch, mediaUrl);
+    } catch {
+      return null;
     }
+    const best = variants[0];
+    if (!best) return null;
+    return {
+      url: best.url,
+      quality: best.resolution ? `${best.resolution} \xB7 ${resolveId}` : resolveId,
+      title: `${query.title} (${resolveId})`,
+      referrer: `${BASE_URL}/`
+    };
   } finally {
     await browser.close();
   }
-  return links;
 }
 var cinejoyScraper = {
   id: "cinejoy",
   name: "CineJoy",
-  version: "1.1.0",
-  search
+  version: "1.2.0",
+  search,
+  resolve
 };
 var scraper_default = cinejoyScraper;
