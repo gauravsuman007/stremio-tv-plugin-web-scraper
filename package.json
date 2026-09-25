@@ -1,0 +1,25 @@
+{
+    "name": "stremio-tv-plugin-web-scraper",
+    "version": "1.0.0",
+    "description": "Search cinejoy.pk and resolve direct per-quality video links via browser automation",
+    "private": true,
+    "type": "module",
+    "engines": {
+        "node": ">=20"
+    },
+    "scripts": {
+        "postinstall": "playwright install chromium",
+        "search": "tsx cli.ts search",
+        "resolve": "tsx cli.ts resolve",
+        "check": "tsc --noEmit",
+        "build": "tsc"
+    },
+    "dependencies": {
+        "playwright": "^1.48.0"
+    },
+    "devDependencies": {
+        "@types/node": "^22.10.2",
+        "tsx": "^4.19.2",
+        "typescript": "^5.7.2"
+    }
+}
