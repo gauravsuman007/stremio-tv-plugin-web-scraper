@@ -1,18 +1,20 @@
 # stremio-tv-plugin-web-scraper
 
-Searches [cinejoy.pk](https://cinejoy.pk) for a title and returns direct,
-per-quality video links, ready to be handed to a player.
+Web-link scrapers for several streaming sites (CineJoy, Flixer, bCine, Movy,
+ShuttleTV, 7Movies, Cinezo): each searches its site for a title and returns
+the best direct, per-quality video link, ready to be handed to a player.
+They ship as one package, `streaming-sites`, for `stremio-tv-plugin-web-links`.
 
-Standalone tool for now -- not wired into the private `stremio-tv` host's
-plugin loader. See "Why browser automation" below for why it can't be a
-plain HTTP scraper.
+Most sites need a real browser (see "Why browser automation" below); Cinezo
+has an open JSON API and is plain HTTP.
 
 ## Sites
 
-`dist/` is one package that exports six scrapers, each registered by the
-host under its own id. The sites work the same way (open a player URL keyed
-by TMDB id in a real browser, read the media URL the player requests), so
-they share `src/shared.mts` (TMDB lookup, capture, playlist verification,
+`dist/` is one package (`streaming-sites`) that exports seven scrapers, each registered by the
+host under its own id. Six sites work the same way (open a player URL keyed
+by TMDB id in a real browser, read the media URL the player requests); the
+seventh, Cinezo, asks its player's JSON API directly (an `HttpSite` instead of
+a `BrowserSite`, no Chromium involved). All share `src/shared.mts` (TMDB lookup, capture, playlist verification,
 best-stream picking) and each site is one small module in `src/sites/`.
 Every scraper's `search()` returns one row; `resolve()` tries all of that
 site's servers and returns the best resolution (stopping early on 2160p, or
@@ -32,6 +34,7 @@ and then.
 | Movy | movy.sx | 1080p | Needs Play clicks; popunder ads hijack the first ones. Playlist named for its resolution. |
 | ShuttleTV | cinesrc.st (shuttletv.su's player) | 4K | 4K only on Superman 2025; otherwise 1080p. Proof-of-work WASM. |
 | 7Movies | embed.vidrift.net (7movies.ac's player) | 1080p | Slow or missing for some titles (Interstellar, Breaking Bad returned nothing). |
+| Cinezo | player.cinezo.live (arrowtv.net's player) | 1080p | No browser: `proxy1.flikhub.net` answers plain HTTP given the player's Referer/Origin. Only its `berlin` source (HLS) is used; 1-4s. Missing for some titles (The Godfather, Superman 2025 returned an upstream 502). |
 
 Checked and left out:
 - watch.spencerdevs.xyz plays in a browser, but its CDN returns 403 to any
@@ -39,10 +42,16 @@ Checked and left out:
 - stellar.gdn / rivestream.app are behind a Turnstile challenge; popcornmovies.ac
   and beta.way2movies.live sit behind a Cloudflare interstitial; reelix.ac's
   player (vidcore.io) returns a Cloudflare 403.
-- arrowtv.net (cinezo), 67movies.st (vidlove), moovie.fun (zxcstream) and
-  meowtv.ru never produced a stream in headless Chromium: their players only
-  poll an obfuscated API or hand the page to ad redirects. movienig.ht had no
-  stream for the titles tried.
+- meowtv.ru returns its streams encrypted; the key comes from a WASM module
+  that first checks for headless/webdriver browsers and otherwise hands back
+  decoy URLs. That is bot detection, so it is not worked around.
+- viv.st is behind a Turnstile challenge.
+- moovie.fun (zxcstream) only serves DASH (moviebox), which the host's link
+  kinds (`file`, `hls`) can't carry; the same goes for Cinezo's `zendaya`
+  source, which is why only `berlin` is used there.
+- 67movies.st (vidlove) only polls an obfuscated API and never produced a
+  stream. movienig.ht and streamo.pro produced none (movienig.ht's API
+  wants a login).
 
 ## Scraper contract
 

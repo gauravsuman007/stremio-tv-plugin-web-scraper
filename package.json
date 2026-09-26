@@ -1,7 +1,7 @@
 {
     "name": "stremio-tv-plugin-web-scraper",
-    "version": "1.10.0",
-    "description": "Search cinejoy.pk and resolve direct per-quality video links via browser automation",
+    "version": "1.11.0",
+    "description": "Web-link scrapers for several streaming sites: search by title, resolve the best-quality stream",
     "private": true,
     "type": "module",
     "engines": {

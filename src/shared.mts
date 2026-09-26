@@ -278,7 +278,7 @@ export interface Capture {
     label?: string;
 }
 
-export interface SiteAdapter {
+interface SiteBase {
     /** Doubles as `WebLink.resolveId`. */
     id: string;
     /** Shown on the result row. */
@@ -290,10 +290,21 @@ export interface SiteAdapter {
     maxQuality: string;
     /** Cheap, browser-free check run at list time; false drops the placeholder. */
     available?(ctx: ScraperContext): Promise<boolean>;
+}
+
+/** A site whose stream only comes out of page-side code: drives a real browser. */
+export interface BrowserSite extends SiteBase {
     /** Drives `page` and yields candidate media URLs, best first. The caller
      *  verifies each one and stops at the first that plays. */
     captures(page: Page, target: SiteTarget, ctx: ScraperContext): AsyncGenerator<Capture>;
 }
+
+/** A site with an open JSON API for its streams: plain `ctx.fetch`, no Chromium needed. */
+export interface HttpSite extends SiteBase {
+    httpCaptures(target: SiteTarget, ctx: ScraperContext): AsyncGenerator<Capture>;
+}
+
+export type SiteAdapter = BrowserSite | HttpSite;
 
 const PAGE_LOAD_CAPTURE_TIMEOUT_MS = 20_000;
 
@@ -365,11 +376,16 @@ const SOFT_DEADLINE_MS = 10_000;
  * remaining servers.
  */
 async function resolveSite(site: SiteAdapter, query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink | null> {
-    const executablePath = findChromiumExecutable();
-    if (!executablePath) return null;
-
     const match = await resolveTmdbMatch(query, ctx.fetch);
     if (!match) return null;
+
+    const target: SiteTarget = { match, season: query.season, episode: query.episode };
+    const displayTitle = match.year ? `${match.title} (${match.year})` : match.title;
+
+    if ("httpCaptures" in site) return pickBestCapture(site, site.httpCaptures(target, ctx), displayTitle, ctx);
+
+    const executablePath = findChromiumExecutable();
+    if (!executablePath) return null;
 
     const browser = await chromium.launch({
         headless: true,
@@ -386,88 +402,93 @@ async function resolveSite(site: SiteAdapter, query: WebLinkQuery, ctx: ScraperC
         const page = await context.newPage();
         context.on("page", (popup) => void popup.close().catch(() => {}));
 
-        const displayTitle = match.year ? `${match.title} (${match.year})` : match.title;
-
-        let best: { link: WebLink; score: number; height: number } | null = null;
-        const startedAt = Date.now();
-        const captures = site.captures(page, { match, season: query.season, episode: query.episode }, ctx);
-
-        try {
-            while (true) {
-                const pending = captures.next();
-                pending.catch(() => {}); // may be abandoned at the deadline; the browser closing settles it.
-
-                let step: IteratorResult<Capture> | null;
-                if (best) {
-                    const remainingMs = SOFT_DEADLINE_MS - (Date.now() - startedAt);
-                    if (remainingMs <= 0) break;
-                    step = await Promise.race([pending, new Promise<null>((r) => setTimeout(() => r(null), remainingMs))]);
-                } else {
-                    step = await pending;
-                }
-                if (!step || step.done) break;
-
-                const { mediaUrl, label } = step.value;
-
-                let variants;
-                try {
-                    variants = await expandMasterPlaylist(ctx.fetch, mediaUrl, site.referrer);
-                } catch {
-                    continue; // dead/blocked mirror -- try the next one.
-                }
-
-                const top = variants[0]; // sorted by bandwidth, highest first.
-                if (!top) continue;
-
-                const height = Math.max(...variants.map(variantHeight)) || heightFromUrl(mediaUrl);
-                const score = height * 1e9 + Math.max(...variants.map((v) => v.bandwidth ?? 0));
-                if (best && score <= best.score) continue;
-
-                /*
-                    A REAL MASTER, WITH SOMETHING TO PICK BETWEEN, GOES THROUGH
-                    WHOLE -- not flattened to its best variant. Measured: these
-                    sites' own master playlists commonly carry two or three
-                    resolutions (1080p and 720p, here), which is exactly the
-                    shape a viewer might want a say over rather than always
-                    getting the top one silently. `web-links`' own relay
-                    (`rewritePlaylist`) already knows how to route a master's
-                    variant lines back through itself, same as it does for a
-                    leaf playlist's segments -- see its own doc comment. A
-                    single-variant result (a plain file, or a master with only
-                    one rendition) has nothing to pick between, so it keeps
-                    going out flattened exactly as before.
-                */
-                const resolutions = variants.map((v) => v.resolution).filter((r): r is string => Boolean(r));
-                const multi = variants.length > 1;
-                const mirror = label ? `${site.name} mirror: ${label}` : site.name;
-
-                best = {
-                    score,
-                    height,
-                    link: {
-                        url: multi ? mediaUrl : top.url,
-                        resolveKind: "hls",
-                        quality: resolutions.length
-                            ? `${resolutions.join("/")} · ${label ?? site.name}`
-                            : height
-                              ? `${height}p · ${label ?? site.name}`
-                              : mirror,
-                        title: displayTitle,
-                        referrer: site.referrer
-                    }
-                };
-
-                if (best.height >= BEST_POSSIBLE_HEIGHT) break;
-            }
-        } finally {
-            void captures.return(undefined).catch(() => {}); // not awaited: it queues behind an abandoned pending step.
-        }
-
-        if (best) return best.link;
-        return null; // no server on this site produced a playable link.
+        return await pickBestCapture(site, site.captures(page, target, ctx), displayTitle, ctx);
     } finally {
         await browser.close();
     }
+}
+
+async function pickBestCapture(
+    site: SiteAdapter,
+    captures: AsyncGenerator<Capture>,
+    displayTitle: string,
+    ctx: ScraperContext
+): Promise<WebLink | null> {
+    let best: { link: WebLink; score: number; height: number } | null = null;
+    const startedAt = Date.now();
+
+    try {
+        while (true) {
+            const pending = captures.next();
+            pending.catch(() => {}); // may be abandoned at the deadline; the browser closing settles it.
+
+            let step: IteratorResult<Capture> | null;
+            if (best) {
+                const remainingMs = SOFT_DEADLINE_MS - (Date.now() - startedAt);
+                if (remainingMs <= 0) break;
+                step = await Promise.race([pending, new Promise<null>((r) => setTimeout(() => r(null), remainingMs))]);
+            } else {
+                step = await pending;
+            }
+            if (!step || step.done) break;
+
+            const { mediaUrl, label } = step.value;
+
+            let variants;
+            try {
+                variants = await expandMasterPlaylist(ctx.fetch, mediaUrl, site.referrer);
+            } catch {
+                continue; // dead/blocked mirror -- try the next one.
+            }
+
+            const top = variants[0]; // sorted by bandwidth, highest first.
+            if (!top) continue;
+
+            const height = Math.max(...variants.map(variantHeight)) || heightFromUrl(mediaUrl);
+            const score = height * 1e9 + Math.max(...variants.map((v) => v.bandwidth ?? 0));
+            if (best && score <= best.score) continue;
+
+            /*
+                A REAL MASTER, WITH SOMETHING TO PICK BETWEEN, GOES THROUGH
+                WHOLE -- not flattened to its best variant. Measured: these
+                sites' own master playlists commonly carry two or three
+                resolutions (1080p and 720p, here), which is exactly the
+                shape a viewer might want a say over rather than always
+                getting the top one silently. `web-links`' own relay
+                (`rewritePlaylist`) already knows how to route a master's
+                variant lines back through itself, same as it does for a
+                leaf playlist's segments -- see its own doc comment. A
+                single-variant result (a plain file, or a master with only
+                one rendition) has nothing to pick between, so it keeps
+                going out flattened exactly as before.
+            */
+            const resolutions = variants.map((v) => v.resolution).filter((r): r is string => Boolean(r));
+            const multi = variants.length > 1;
+            const mirror = label ? `${site.name} mirror: ${label}` : site.name;
+
+            best = {
+                score,
+                height,
+                link: {
+                    url: multi ? mediaUrl : top.url,
+                    resolveKind: "hls",
+                    quality: resolutions.length
+                        ? `${resolutions.join("/")} · ${label ?? site.name}`
+                        : height
+                          ? `${height}p · ${label ?? site.name}`
+                          : mirror,
+                    title: displayTitle,
+                    referrer: site.referrer
+                }
+            };
+
+            if (best.height >= BEST_POSSIBLE_HEIGHT) break;
+        }
+    } finally {
+        void captures.return(undefined).catch(() => {}); // not awaited: it queues behind an abandoned pending step.
+    }
+
+    return best?.link ?? null; // null: no server on this site produced a playable link.
 }
 
 /**
@@ -477,7 +498,7 @@ async function resolveSite(site: SiteAdapter, query: WebLinkQuery, ctx: ScraperC
  * server actually ends up serving the video is `resolve()`'s job entirely.
  */
 async function searchSite(site: SiteAdapter, query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink[]> {
-    if (!findChromiumExecutable()) {
+    if (!("httpCaptures" in site) && !findChromiumExecutable()) {
         console.warn(`[${site.id}] no Chromium binary found (set CHROMIUM_PATH, or apk add chromium) -- skipping`);
         return [];
     }

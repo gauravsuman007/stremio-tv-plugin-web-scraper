@@ -21,7 +21,7 @@ rmSync("dist", { recursive: true, force: true });
 mkdirSync("dist", { recursive: true });
 
 execSync(
-    "npx esbuild src/index.mts --bundle --platform=node --format=cjs --outfile=dist/cinejoy.cjs " +
+    "npx esbuild src/index.mts --bundle --platform=node --format=cjs --outfile=dist/streaming-sites.cjs " +
         `--define:__PACKAGE_VERSION__='"${pkg.version}"' ` +
         "--external:playwright-core --external:chromium-bidi --external:bufferutil --external:utf-8-validate",
     { stdio: "inherit" }
@@ -32,7 +32,7 @@ cpSync("node_modules/playwright-core", "dist/node_modules/playwright-core", { re
 
 writeFileSync(
     "dist/scraper.json",
-    JSON.stringify({ id: "cinejoy", entry: "cinejoy.cjs", version: pkg.version }, null, 4) + "\n"
+    JSON.stringify({ id: "streaming-sites", entry: "streaming-sites.cjs", version: pkg.version }, null, 4) + "\n"
 );
 
-console.log("built dist/ (cinejoy.cjs + node_modules/playwright-core + scraper.json)");
+console.log("built dist/ (streaming-sites.cjs + node_modules/playwright-core + scraper.json)");
