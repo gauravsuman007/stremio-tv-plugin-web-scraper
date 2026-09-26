@@ -22,6 +22,7 @@ mkdirSync("dist", { recursive: true });
 
 execSync(
     "npx esbuild src/index.mts --bundle --platform=node --format=cjs --outfile=dist/cinejoy.cjs " +
+        `--define:__PACKAGE_VERSION__='"${pkg.version}"' ` +
         "--external:playwright-core --external:chromium-bidi --external:bufferutil --external:utf-8-validate",
     { stdio: "inherit" }
 );
