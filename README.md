@@ -9,22 +9,40 @@ plain HTTP scraper.
 
 ## Sites
 
-The host loads one scraper per repo, so the sites that work like cinejoy
-(open a watch URL keyed by TMDB id in a real browser, read the media URL the
-player requests) are adapters inside `src/scraper.mts`, sharing capture,
-playlist verification and link building. `search()` returns one placeholder
-per site; `resolve()` runs the one that was picked.
+`dist/` is one package that exports six scrapers, each registered by the
+host under its own id. The sites work the same way (open a player URL keyed
+by TMDB id in a real browser, read the media URL the player requests), so
+they share `src/shared.mts` (TMDB lookup, capture, playlist verification,
+best-stream picking) and each site is one small module in `src/sites/`.
+Every scraper's `search()` returns one row; `resolve()` tries all of that
+site's servers and returns the best resolution (stopping early on 2160p, or
+after 10s once something plays). To add a site, write a `SiteAdapter`, wrap it
+with `createScraper`, and append it to the array in `src/index.mts`.
 
-| Site | Player URL | Notes |
-|---|---|---|
-| cinejoy.pk | `/watch/movie/{tmdb}`, `/watch/tv/{tmdb}/{s}/{e}` | Clicks through its server list. |
-| flixer.gd | `/watch/movie/{tmdb}`, `/watch/tv/{tmdb}/{s}/{e}` | Autoplays; stream URL comes from a WASM module. Injects popunders (closed by the scraper). |
-| bciney.to | `player.bciney.to/embed/movie/{tmdb}`, `/embed/tv/{tmdb}/{s}/{e}` | Opens its embedded player directly; autoplays. Single low-res rendition. |
+The scraper's name on the plugins page carries its max quality ("Movy · up to
+1080p"); it is the `maxQuality` on each adapter, set from testing across ten
+titles (older and recent movies, three TV episodes) and worth re-checking now
+and then.
 
-Checked and left out: watch.spencerdevs.xyz plays in a browser, but its CDN
-returns 403 to any non-browser client, so the host could never fetch or relay
-the stream. The rest are behind Cloudflare/Turnstile challenges, an opaque
-third-party embed, or a rewrite-sized API flow.
+| Scraper | Player | Max quality seen | Notes |
+|---|---|---|---|
+| CineJoy | cinejoy.pk | 4K | Clicks through its server list; 4K on some titles (Oppenheimer, Superman 2025, GoT), 1080p on others. |
+| Flixer | flixer.gd | 1080p | Autoplays; WASM-derived stream. Often a single playlist with no stated resolution, 720p on TV. Some catalog gaps. Injects popunders. |
+| bCine | player.bciney.to | 1080p | 1080/720/360 masters; widescreen titles report e.g. 1920x800. |
+| Movy | movy.sx | 1080p | Needs Play clicks; popunder ads hijack the first ones. Playlist named for its resolution. |
+| ShuttleTV | cinesrc.st (shuttletv.su's player) | 4K | 4K only on Superman 2025; otherwise 1080p. Proof-of-work WASM. |
+| 7Movies | embed.vidrift.net (7movies.ac's player) | 1080p | Slow or missing for some titles (Interstellar, Breaking Bad returned nothing). |
+
+Checked and left out:
+- watch.spencerdevs.xyz plays in a browser, but its CDN returns 403 to any
+  non-browser client, so the host could never fetch or relay the stream.
+- stellar.gdn / rivestream.app are behind a Turnstile challenge; popcornmovies.ac
+  and beta.way2movies.live sit behind a Cloudflare interstitial; reelix.ac's
+  player (vidcore.io) returns a Cloudflare 403.
+- arrowtv.net (cinezo), 67movies.st (vidlove), moovie.fun (zxcstream) and
+  meowtv.ru never produced a stream in headless Chromium: their players only
+  poll an obfuscated API or hand the page to ad redirects. movienig.ht had no
+  stream for the titles tried.
 
 ## Scraper contract
 
