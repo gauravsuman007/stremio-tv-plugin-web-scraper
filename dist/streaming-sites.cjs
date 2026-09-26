@@ -447,6 +447,31 @@ var movySite = {
 };
 var movy_default = createScraper(movySite);
 
+// src/sites/moviesapi.mts
+var SITE = "https://moviesapi.to/";
+var PLAYER_KEY = "3a67e8866ae1d2bb9e81fe7f73315a56eb3bdf5e3e755c7554c8be6910aa6b13";
+var API_TIMEOUT_MS2 = 2e4;
+var moviesapiSite = {
+  id: "moviesapi",
+  name: "MoviesAPI",
+  referrer: SITE,
+  maxQuality: "1080p",
+  async *httpCaptures({ match, season, episode }, ctx) {
+    const path = match.mediaType === "movie" ? `movie/${match.tmdbId}` : `tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
+    const response = await ctx.fetch(`${SITE}api/vidora/v1/${path}`, {
+      headers: { Referer: SITE, Origin: SITE.slice(0, -1), "x-player-key": PLAYER_KEY },
+      signal: AbortSignal.timeout(API_TIMEOUT_MS2)
+    });
+    if (!response.ok) return;
+    const body = await response.json();
+    if (!body.result) return;
+    for (const source of body.sources ?? []) {
+      if (source.url) yield { mediaUrl: source.url, label: source.source };
+    }
+  }
+};
+var moviesapi_default = createScraper(moviesapiSite);
+
 // src/sites/shuttletv.mts
 var shuttletvSite = {
   id: "shuttletv",
@@ -462,5 +487,5 @@ var shuttletvSite = {
 var shuttletv_default = createScraper(shuttletvSite);
 
 // src/index.mts
-var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default].map((scraper) => ({ ...scraper, version: "1.11.5" }));
+var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default].map((scraper) => ({ ...scraper, version: "1.12.0" }));
 var index_default = scrapers;
