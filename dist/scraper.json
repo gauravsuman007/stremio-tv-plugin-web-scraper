@@ -1,5 +1,5 @@
 {
-    "id": "cinejoy",
-    "entry": "cinejoy.cjs",
-    "version": "1.10.0"
+    "id": "streaming-sites",
+    "entry": "streaming-sites.cjs",
+    "version": "1.11.0"
 }

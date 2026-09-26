@@ -206,10 +206,13 @@ function heightFromUrl(url) {
 var BEST_POSSIBLE_HEIGHT = 2160;
 var SOFT_DEADLINE_MS = 1e4;
 async function resolveSite(site, query, ctx) {
-  const executablePath = findChromiumExecutable();
-  if (!executablePath) return null;
   const match = await resolveTmdbMatch(query, ctx.fetch);
   if (!match) return null;
+  const target = { match, season: query.season, episode: query.episode };
+  const displayTitle = match.year ? `${match.title} (${match.year})` : match.title;
+  if ("httpCaptures" in site) return pickBestCapture(site, site.httpCaptures(target, ctx), displayTitle, ctx);
+  const executablePath = findChromiumExecutable();
+  if (!executablePath) return null;
   const browser = await import_playwright_core.chromium.launch({
     headless: true,
     executablePath,
@@ -223,64 +226,64 @@ async function resolveSite(site, query, ctx) {
     const page = await context.newPage();
     context.on("page", (popup) => void popup.close().catch(() => {
     }));
-    const displayTitle = match.year ? `${match.title} (${match.year})` : match.title;
-    let best = null;
-    const startedAt = Date.now();
-    const captures = site.captures(page, { match, season: query.season, episode: query.episode }, ctx);
-    try {
-      while (true) {
-        const pending = captures.next();
-        pending.catch(() => {
-        });
-        let step;
-        if (best) {
-          const remainingMs = SOFT_DEADLINE_MS - (Date.now() - startedAt);
-          if (remainingMs <= 0) break;
-          step = await Promise.race([pending, new Promise((r) => setTimeout(() => r(null), remainingMs))]);
-        } else {
-          step = await pending;
-        }
-        if (!step || step.done) break;
-        const { mediaUrl, label } = step.value;
-        let variants;
-        try {
-          variants = await expandMasterPlaylist(ctx.fetch, mediaUrl, site.referrer);
-        } catch {
-          continue;
-        }
-        const top = variants[0];
-        if (!top) continue;
-        const height = Math.max(...variants.map(variantHeight)) || heightFromUrl(mediaUrl);
-        const score = height * 1e9 + Math.max(...variants.map((v) => v.bandwidth ?? 0));
-        if (best && score <= best.score) continue;
-        const resolutions = variants.map((v) => v.resolution).filter((r) => Boolean(r));
-        const multi = variants.length > 1;
-        const mirror = label ? `${site.name} mirror: ${label}` : site.name;
-        best = {
-          score,
-          height,
-          link: {
-            url: multi ? mediaUrl : top.url,
-            resolveKind: "hls",
-            quality: resolutions.length ? `${resolutions.join("/")} \xB7 ${label ?? site.name}` : height ? `${height}p \xB7 ${label ?? site.name}` : mirror,
-            title: displayTitle,
-            referrer: site.referrer
-          }
-        };
-        if (best.height >= BEST_POSSIBLE_HEIGHT) break;
-      }
-    } finally {
-      void captures.return(void 0).catch(() => {
-      });
-    }
-    if (best) return best.link;
-    return null;
+    return await pickBestCapture(site, site.captures(page, target, ctx), displayTitle, ctx);
   } finally {
     await browser.close();
   }
 }
+async function pickBestCapture(site, captures, displayTitle, ctx) {
+  let best = null;
+  const startedAt = Date.now();
+  try {
+    while (true) {
+      const pending = captures.next();
+      pending.catch(() => {
+      });
+      let step;
+      if (best) {
+        const remainingMs = SOFT_DEADLINE_MS - (Date.now() - startedAt);
+        if (remainingMs <= 0) break;
+        step = await Promise.race([pending, new Promise((r) => setTimeout(() => r(null), remainingMs))]);
+      } else {
+        step = await pending;
+      }
+      if (!step || step.done) break;
+      const { mediaUrl, label } = step.value;
+      let variants;
+      try {
+        variants = await expandMasterPlaylist(ctx.fetch, mediaUrl, site.referrer);
+      } catch {
+        continue;
+      }
+      const top = variants[0];
+      if (!top) continue;
+      const height = Math.max(...variants.map(variantHeight)) || heightFromUrl(mediaUrl);
+      const score = height * 1e9 + Math.max(...variants.map((v) => v.bandwidth ?? 0));
+      if (best && score <= best.score) continue;
+      const resolutions = variants.map((v) => v.resolution).filter((r) => Boolean(r));
+      const multi = variants.length > 1;
+      const mirror = label ? `${site.name} mirror: ${label}` : site.name;
+      best = {
+        score,
+        height,
+        link: {
+          url: multi ? mediaUrl : top.url,
+          resolveKind: "hls",
+          quality: resolutions.length ? `${resolutions.join("/")} \xB7 ${label ?? site.name}` : height ? `${height}p \xB7 ${label ?? site.name}` : mirror,
+          title: displayTitle,
+          referrer: site.referrer
+        }
+      };
+      if (best.height >= BEST_POSSIBLE_HEIGHT) break;
+    }
+  } finally {
+    void captures.return(void 0).catch(() => {
+    });
+  }
+  return best?.link ?? null;
+}
 async function searchSite(site, query, ctx) {
-  if (!findChromiumExecutable()) {
+  if (!("httpCaptures" in site) && !findChromiumExecutable()) {
     console.warn(`[${site.id}] no Chromium binary found (set CHROMIUM_PATH, or apk add chromium) -- skipping`);
     return [];
   }
@@ -312,6 +315,27 @@ var sevenMoviesSite = {
   }
 };
 var movies_default = createScraper(sevenMoviesSite);
+
+// src/sites/cinezo.mts
+var PLAYER = "https://player.cinezo.live/";
+var API_TIMEOUT_MS = 2e4;
+var cinezoSite = {
+  id: "cinezo",
+  name: "Cinezo",
+  referrer: PLAYER,
+  maxQuality: "1080p",
+  async *httpCaptures({ match, season, episode }, ctx) {
+    const path = match.mediaType === "movie" ? `movie?id=${match.tmdbId}` : `tv?id=${match.tmdbId}&season=${season ?? 1}&episode=${episode ?? 1}`;
+    const response = await ctx.fetch(`https://proxy1.flikhub.net/${path}&mode=json&sources=berlin&hevc=1`, {
+      headers: { Referer: PLAYER, Origin: PLAYER.slice(0, -1) },
+      signal: AbortSignal.timeout(API_TIMEOUT_MS)
+    });
+    if (!response.ok) return;
+    const body = await response.json();
+    if (body.source?.url) yield { mediaUrl: body.source.url, label: "Berlin" };
+  }
+};
+var cinezo_default = createScraper(cinezoSite);
 
 // src/sites/bciney.mts
 var bcineySite = {
@@ -413,5 +437,5 @@ var shuttletvSite = {
 var shuttletv_default = createScraper(shuttletvSite);
 
 // src/index.mts
-var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default].map((scraper) => ({ ...scraper, version: "1.10.0" }));
+var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default].map((scraper) => ({ ...scraper, version: "1.11.0" }));
 var index_default = scrapers;
