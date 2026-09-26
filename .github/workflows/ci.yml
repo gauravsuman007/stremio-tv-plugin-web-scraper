@@ -14,12 +14,22 @@ jobs:
 
         steps:
             - uses: actions/checkout@v4
+              with:
+                  submodules: true
 
             - uses: actions/setup-node@v4
               with:
                   node-version: "22"
 
             - run: npm ci
+
+            # The scraper contract is a git submodule of the upstream
+            # stremio-tv-plugin-web-links repo (vendor/web-links), imported
+            # type-only. Typecheck against upstream's CURRENT main, not just
+            # the pinned commit, so a contract change there fails this job
+            # right away instead of waiting for someone to bump the pin.
+            - name: Update the contract submodule to upstream main
+              run: git submodule update --init --remote vendor/web-links
 
             - run: npm run check
 

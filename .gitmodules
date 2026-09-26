@@ -1,0 +1,4 @@
+[submodule "vendor/web-links"]
+	path = vendor/web-links
+	url = https://github.com/gauravsuman007/stremio-tv-plugin-web-links.git
+	branch = main

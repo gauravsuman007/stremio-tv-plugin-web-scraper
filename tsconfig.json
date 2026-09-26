@@ -9,7 +9,8 @@
         "esModuleInterop": true,
         "skipLibCheck": true,
         "outDir": "dist",
-        "rootDir": "."
+        "rootDir": ".",
+        "allowImportingTsExtensions": true
     },
-    "include": ["src/**/*.ts", "cli.ts"]
+    "include": ["src/**/*.ts", "src/**/*.mts", "cli.ts"]
 }

@@ -1,8 +1,19 @@
 /**
  * The `WebLinkScraper` stremio-tv-plugin-web-links loads: wraps this
- * repo's existing cinejoy.pk search + per-quality resolver (`tmdb.ts`,
- * `cinejoy.ts`, `hls.ts`) behind the scraper contract from
+ * repo's cinejoy.pk search + per-quality resolver (`tmdb.ts`, `cinejoy.ts`,
+ * `hls.ts`) behind the scraper contract from
  * `stremio-tv-plugin-web-links/templates/scraper-template.mts`.
+ *
+ * ONE SCRAPER, SEVERAL SITES
+ * ---------------------------
+ * The host loads exactly one scraper per repo `dist/`, so the other sites
+ * that work the same way as cinejoy -- open a watch URL keyed by TMDB id in
+ * a real browser, read the media URL the page's player requests -- are
+ * `SiteAdapter`s inside this scraper rather than separate packages. Each
+ * adapter only says how to reach its player and yields candidate media URLs;
+ * capture, playlist verification and link building are shared. `search()`
+ * returns one cheap placeholder per adapter and `resolve()` (play time) runs
+ * the one the viewer picked, `resolveId` being the adapter's id.
  *
  * WHY THIS NEEDS A REAL BROWSER, AND WHAT THAT COSTS THE HOST
  * ----------------------------------------------------------
@@ -41,48 +52,11 @@
 import { chromium, type Page, type Request as PwRequest } from "playwright-core";
 import { existsSync } from "node:fs";
 
-/* ---- the contract this file implements (kept in sync by hand with
- *      stremio-tv-plugin-web-links/src/scraper.mts) ------------------- */
-
-interface WebLinkQuery {
-    type: string;
-    id: string;
-    title: string;
-    year?: number;
-    season?: number;
-    episode?: number;
-}
-
-interface WebLink {
-    url: string;
-    /** See `stremio-tv-plugin-web-links/src/scraper.mts`'s module doc. Set
-     *  on every result `search()` returns here -- see the note above
-     *  `search()` below for why. */
-    resolveId?: string;
-    quality?: string;
-    title?: string;
-    size?: string;
-    labels?: string[];
-    referrer?: string;
-    userAgent?: string;
-}
-
-interface ScraperContext {
-    fetch(url: string, init?: RequestInit): Promise<Response>;
-    budgetMs: number;
-    /** The household VPN's HTTP proxy address, when one is configured --
-     *  handed straight to Playwright's own `proxy` launch option, since a
-     *  whole browser process's traffic can't be routed through `ctx.fetch`. */
-    proxyUrl?: string;
-}
-
-interface WebLinkScraper {
-    id: string;
-    name: string;
-    version?: string;
-    search(query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink[]>;
-    resolve(resolveId: string, query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink | null>;
-}
+/* The contract comes straight from the upstream repo, vendored as a git
+ * submodule (vendor/web-links) and imported type-only: esbuild erases it, so
+ * nothing from that repo ships in dist/, but `npm run check` fails the moment
+ * upstream's contract and this file disagree. */
+import type { ScraperContext, WebLink, WebLinkQuery, WebLinkScraper } from "../vendor/web-links/src/scraper.mts";
 
 /* ---- cinejoy-specific pieces, adapted from tmdb.ts/cinejoy.ts/hls.ts -- */
 
@@ -191,7 +165,12 @@ function watchUrl(tmdbId: number, mediaType: "movie" | "tv", season?: number, ep
     return `${BASE_URL}/watch/tv/${tmdbId}/${season ?? 1}/${episode ?? 1}`;
 }
 
-async function selectServerAndCapture(page: Page, serverName: string, timeoutMs: number): Promise<string | null> {
+/**
+ * Listens for the media URL the page's player requests, THEN runs `trigger`
+ * (a click sequence, or the `goto` itself for a site that autoplays -- the
+ * listener has to be attached before the load or the request is missed).
+ */
+async function captureMediaUrl(page: Page, timeoutMs: number, trigger: () => Promise<unknown>): Promise<string | null> {
     let resolveMedia: (url: string | null) => void;
     const donePromise = new Promise<string | null>((resolve) => {
         resolveMedia = resolve;
@@ -222,8 +201,7 @@ async function selectServerAndCapture(page: Page, serverName: string, timeoutMs:
     page.on("request", onRequest);
 
     try {
-        await page.getByRole("button", { name: "Servers", exact: true }).click();
-        await page.getByText(serverName, { exact: true }).first().click({ timeout: 5_000 });
+        await trigger();
 
         return await Promise.race([
             donePromise,
@@ -237,17 +215,25 @@ async function selectServerAndCapture(page: Page, serverName: string, timeoutMs:
     }
 }
 
+function selectServerAndCapture(page: Page, serverName: string, timeoutMs: number): Promise<string | null> {
+    return captureMediaUrl(page, timeoutMs, async () => {
+        await page.getByRole("button", { name: "Servers", exact: true }).click();
+        await page.getByText(serverName, { exact: true }).first().click({ timeout: 5_000 });
+    });
+}
+
 async function expandMasterPlaylist(
     fetchImpl: ScraperContext["fetch"],
-    masterUrl: string
+    masterUrl: string,
+    referrer: string
 ): Promise<{ resolution: string | null; bandwidth: number | null; url: string }[]> {
     if (!MASTER_PLAYLIST_RE.test(masterUrl)) {
-        const response = await fetchImpl(masterUrl, { headers: { Referer: `${BASE_URL}/`, Range: "bytes=0-1023" } });
+        const response = await fetchImpl(masterUrl, { headers: { Referer: referrer, Range: "bytes=0-1023" } });
         if (!response.ok) throw new Error(`direct file not fetchable: ${response.status}`);
         return [{ resolution: null, bandwidth: null, url: masterUrl }];
     }
 
-    const response = await fetchImpl(masterUrl, { headers: { Referer: `${BASE_URL}/` } });
+    const response = await fetchImpl(masterUrl, { headers: { Referer: referrer } });
     if (!response.ok) throw new Error(`master playlist not fetchable: ${response.status}`);
 
     const text = await response.text();
@@ -301,15 +287,142 @@ async function resolveTmdbMatch(query: WebLinkQuery, fetchImpl: ScraperContext["
     return matches.find((m) => m.mediaType === wantType) ?? matches[0] ?? null;
 }
 
+/* ---- site adapters ---------------------------------------------------- */
+
+interface SiteTarget {
+    match: TmdbMatch;
+    season?: number;
+    episode?: number;
+}
+
+interface Capture {
+    mediaUrl: string;
+    /** Mirror/server name, when the site has several. */
+    label?: string;
+}
+
+interface SiteAdapter {
+    /** Doubles as `WebLink.resolveId`. */
+    id: string;
+    /** Shown on the result row. */
+    name: string;
+    /** Referer the site's media hosts expect. */
+    referrer: string;
+    /** Cheap, browser-free check run at list time; false drops the placeholder. */
+    available?(ctx: ScraperContext): Promise<boolean>;
+    /** Drives `page` and yields candidate media URLs, best first. The caller
+     *  verifies each one and stops at the first that plays. */
+    captures(page: Page, target: SiteTarget, ctx: ScraperContext): AsyncGenerator<Capture>;
+}
+
+const PAGE_LOAD_CAPTURE_TIMEOUT_MS = 20_000;
+
+/** For a site whose player starts by itself: open `url`, take the first media request. */
+async function* autoplayCapture(page: Page, url: string, ctx: ScraperContext): AsyncGenerator<Capture> {
+    const timeoutMs = Math.min(PAGE_LOAD_CAPTURE_TIMEOUT_MS, Math.max(8_000, ctx.budgetMs));
+    const mediaUrl = await captureMediaUrl(page, timeoutMs, () =>
+        page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs })
+    );
+    if (mediaUrl) yield { mediaUrl };
+}
+
 /**
- * LIST TIME: cheap and fast, no browser -- just enough to know cinejoy has
- * SOMETHING for this title (a real TMDB match and at least one server up).
- * One placeholder only, tagged with this scraper's own name so its origin
- * is visible on the row -- not one per mirror. Which mirror actually ends
- * up serving the video is `resolve()`'s job entirely (see below): trying
- * every mirror to find one that plays is exactly the kind of failure
- * handling a viewer shouldn't have to do by hand, clicking through four
- * near-identical rows to find the one that isn't dead.
+ * The original site. Tries every up server in turn, 4k-flagged ones first.
+ *
+ * SERVERS FLAGGED `4k` GO FIRST, BUT THIS IS A HINT, NOT A GUARANTEE.
+ * `listServers` carries a site-wide capability flag, not a per-title one --
+ * measured against a title with no 4K release at all, a 4k-flagged mirror
+ * and a plain one served the identical 1080p/720p pair from the identical
+ * URL, so the flag can be wrong for a given file. It still costs nothing to
+ * ask the flagged mirror first: the caller already tries every server in
+ * order until one plays, so trying the more-capable one first can only
+ * ever help, never delay a title that has nothing higher to offer.
+ */
+const cinejoySite: SiteAdapter = {
+    id: "cinejoy",
+    name: "CineJoy",
+    referrer: `${BASE_URL}/`,
+    async available(ctx) {
+        return (await listServers(ctx.fetch)).some((s) => s.status === "ok");
+    },
+    async *captures(page, { match, season, episode }, ctx) {
+        const servers = (await listServers(ctx.fetch))
+            .filter((s) => s.status === "ok")
+            .sort((a, b) => Number(b["4k"]) - Number(a["4k"]));
+        if (!servers.length) return;
+
+        const perServerTimeoutMs = Math.min(DEFAULT_PER_SERVER_TIMEOUT_MS, Math.max(5_000, ctx.budgetMs / servers.length));
+
+        await page.goto(watchUrl(match.tmdbId, match.mediaType, season, episode), {
+            waitUntil: "domcontentloaded",
+            timeout: perServerTimeoutMs
+        });
+
+        for (const server of servers) {
+            const mediaUrl = await selectServerAndCapture(page, server.name, perServerTimeoutMs);
+            if (mediaUrl) yield { mediaUrl, label: server.name };
+        }
+    }
+};
+
+/**
+ * flixer.gd -- same `/watch/{movie|tv}/{tmdbId}[/s/e]` shape as cinejoy, but
+ * no server picker: the player autoplays. Its stream URL is also derived by
+ * a WASM module in the page, so it needs the browser just like cinejoy.
+ * The media host serves the playlist with no special headers.
+ *
+ * The site injects malvertising (popunders, fake "install adblocker"
+ * prompts); `resolve()` closes any popup tab, and nothing here ever clicks.
+ */
+const flixerSite: SiteAdapter = {
+    id: "flixer",
+    name: "Flixer",
+    referrer: "https://flixer.gd/",
+    async *captures(page, { match, season, episode }, ctx) {
+        const base = "https://flixer.gd/watch";
+        const url =
+            match.mediaType === "movie"
+                ? `${base}/movie/${match.tmdbId}`
+                : `${base}/tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
+        yield* autoplayCapture(page, url, ctx);
+    }
+};
+
+/**
+ * bciney.to -- its own watch page just iframes `player.bciney.to`, so this
+ * opens that player directly (the same player, without the ad-heavy
+ * wrapper). It autoplays with `?autoplay=true`; the playlist comes back via
+ * its own `v.bciney.to` proxy and needs no special headers.
+ */
+const bcineySite: SiteAdapter = {
+    id: "bciney",
+    name: "bCine",
+    referrer: "https://player.bciney.to/",
+    async *captures(page, { match, season, episode }, ctx) {
+        const base = "https://player.bciney.to/embed";
+        const url =
+            match.mediaType === "movie"
+                ? `${base}/movie/${match.tmdbId}?autoplay=true`
+                : `${base}/tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}?autoplay=true`;
+        yield* autoplayCapture(page, url, ctx);
+    }
+};
+
+const SITES: SiteAdapter[] = [cinejoySite, flixerSite, bcineySite];
+
+/** "auto" is what this scraper's earlier, cinejoy-only versions handed out. */
+function siteFor(resolveId: string): SiteAdapter {
+    return SITES.find((site) => site.id === resolveId) ?? cinejoySite;
+}
+
+/**
+ * LIST TIME: cheap and fast, no browser -- just enough to know a site has
+ * SOMETHING for this title (a real TMDB match, and for cinejoy at least one
+ * server up). One placeholder per site, tagged with the site's name so its
+ * origin is visible on the row -- not one per mirror. Which mirror actually
+ * ends up serving the video is `resolve()`'s job entirely: trying every
+ * mirror to find one that plays is exactly the kind of failure handling a
+ * viewer shouldn't have to do by hand.
  */
 async function search(query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink[]> {
     if (!findChromiumExecutable()) {
@@ -320,52 +433,40 @@ async function search(query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink
     const match = await resolveTmdbMatch(query, ctx.fetch);
     if (!match) return [];
 
-    const servers = (await listServers(ctx.fetch)).filter((s) => s.status === "ok");
-    if (!servers.length) return [];
-
     const displayTitle = match.year ? `${match.title} (${match.year})` : match.title;
 
-    return [
-        {
-            url: "",
-            resolveId: "auto",
-            resolveKind: "hls",
-            title: `${displayTitle} · CineJoy`
-        }
-    ];
+    const placeholders = await Promise.all(
+        SITES.map(async (site): Promise<WebLink | null> => {
+            if (site.available && !(await site.available(ctx).catch(() => false))) return null;
+            return { url: "", resolveId: site.id, resolveKind: "hls", title: `${displayTitle} · ${site.name}` };
+        })
+    );
+    return placeholders.filter((link): link is WebLink => link !== null);
+}
+
+/** Highest resolution first, bandwidth as the tiebreak (and the only signal when a playlist states no resolution). */
+function qualityScore(variant: { resolution: string | null; bandwidth: number | null }): number {
+    const height = Number.parseInt(variant.resolution?.split("x")[1] ?? "0", 10) || 0;
+    return height * 1e9 + (variant.bandwidth ?? 0);
 }
 
 /**
- * PLAY TIME: drives one browser through cinejoy's watch page and tries
- * every up server in turn -- picking the FIRST one that both yields a
- * captured media URL and expands into a real, fetchable playlist -- rather
- * than committing to a single mirror at list time and leaving the viewer to
- * retry by hand if it happens to be the one that's down. `resolveId` is
- * unused: there is only ever one candidate now (see `search()` above), so
- * there is nothing for it to select between.
- *
- * SERVERS FLAGGED `4k` GO FIRST, BUT THIS IS A HINT, NOT A GUARANTEE.
- * `listServers` carries a site-wide capability flag, not a per-title one --
- * measured against a title with no 4K release at all, a 4k-flagged mirror
- * and a plain one served the identical 1080p/720p pair from the identical
- * URL, so the flag can be wrong for a given file. It still costs nothing to
- * ask the flagged mirror first: the loop already tries every server in
- * order until one plays, so trying the more-capable one first can only
- * ever help, never delay a title that has nothing higher to offer.
+ * PLAY TIME: drives one browser through the chosen site's player, verifies
+ * every capture it yields (every up server, for a multi-server site), and
+ * returns the one with the best resolution -- so resolving a site's row
+ * gives that site's best stream across all its servers, and a dead mirror
+ * is simply skipped rather than left for the viewer to retry by hand.
+ * Costs one player round trip per server (bounded by `ctx.budgetMs`), which
+ * is the price of comparing them instead of taking the first that plays.
  */
-async function resolve(_resolveId: string, query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink | null> {
+async function resolve(resolveId: string, query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink | null> {
     const executablePath = findChromiumExecutable();
     if (!executablePath) return null;
 
+    const site = siteFor(resolveId);
+
     const match = await resolveTmdbMatch(query, ctx.fetch);
     if (!match) return null;
-
-    const servers = (await listServers(ctx.fetch))
-        .filter((s) => s.status === "ok")
-        .sort((a, b) => Number(b["4k"]) - Number(a["4k"]));
-    if (!servers.length) return null;
-
-    const perServerTimeoutMs = Math.min(DEFAULT_PER_SERVER_TIMEOUT_MS, Math.max(5_000, ctx.budgetMs / servers.length));
 
     const browser = await chromium.launch({
         headless: true,
@@ -380,32 +481,30 @@ async function resolve(_resolveId: string, query: WebLinkQuery, ctx: ScraperCont
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
         });
         const page = await context.newPage();
-
-        await page.goto(watchUrl(match.tmdbId, match.mediaType, query.season, query.episode), {
-            waitUntil: "domcontentloaded",
-            timeout: perServerTimeoutMs
-        });
+        context.on("page", (popup) => void popup.close().catch(() => {}));
 
         const displayTitle = match.year ? `${match.title} (${match.year})` : match.title;
 
-        for (const server of servers) {
-            const mediaUrl = await selectServerAndCapture(page, server.name, perServerTimeoutMs);
-            if (!mediaUrl) continue; // this mirror never produced a media URL -- try the next one.
+        let best: { link: WebLink; score: number } | null = null;
 
+        for await (const { mediaUrl, label } of site.captures(page, { match, season: query.season, episode: query.episode }, ctx)) {
             let variants;
             try {
-                variants = await expandMasterPlaylist(ctx.fetch, mediaUrl);
+                variants = await expandMasterPlaylist(ctx.fetch, mediaUrl, site.referrer);
             } catch {
                 continue; // dead/blocked mirror -- try the next one.
             }
 
-            const best = variants[0]; // sorted by bandwidth, highest first.
-            if (!best) continue;
+            const top = variants[0]; // sorted by bandwidth, highest first.
+            if (!top) continue;
+
+            const score = Math.max(...variants.map(qualityScore));
+            if (best && score <= best.score) continue;
 
             /*
                 A REAL MASTER, WITH SOMETHING TO PICK BETWEEN, GOES THROUGH
-                WHOLE -- not flattened to its best variant. Measured: this
-                site's own master playlists commonly carry two or three
+                WHOLE -- not flattened to its best variant. Measured: these
+                sites' own master playlists commonly carry two or three
                 resolutions (1080p and 720p, here), which is exactly the
                 shape a viewer might want a say over rather than always
                 getting the top one silently. `web-links`' own relay
@@ -418,19 +517,22 @@ async function resolve(_resolveId: string, query: WebLinkQuery, ctx: ScraperCont
             */
             const resolutions = variants.map((v) => v.resolution).filter((r): r is string => Boolean(r));
             const multi = MASTER_PLAYLIST_RE.test(mediaUrl) && variants.length > 1;
+            const mirror = label ? `${site.name} mirror: ${label}` : site.name;
 
-            return {
-                url: multi ? mediaUrl : best.url,
-                resolveKind: "hls",
-                quality: resolutions.length
-                    ? `${resolutions.join("/")} · ${server.name}`
-                    : `CineJoy mirror: ${server.name}`,
-                title: displayTitle,
-                referrer: `${BASE_URL}/`
+            best = {
+                score,
+                link: {
+                    url: multi ? mediaUrl : top.url,
+                    resolveKind: "hls",
+                    quality: resolutions.length ? `${resolutions.join("/")} · ${label ?? site.name}` : mirror,
+                    title: displayTitle,
+                    referrer: site.referrer
+                }
             };
         }
 
-        return null; // every up server failed to produce a playable link.
+        if (best) return best.link;
+        return null; // no server on this site produced a playable link.
     } finally {
         await browser.close();
     }
@@ -439,7 +541,7 @@ async function resolve(_resolveId: string, query: WebLinkQuery, ctx: ScraperCont
 const cinejoyScraper: WebLinkScraper = {
     id: "cinejoy",
     name: "CineJoy",
-    version: "1.4.0",
+    version: "1.6.0",
     search,
     resolve
 };

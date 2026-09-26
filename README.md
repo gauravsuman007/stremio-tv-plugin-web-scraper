@@ -7,6 +7,34 @@ Standalone tool for now -- not wired into the private `stremio-tv` host's
 plugin loader. See "Why browser automation" below for why it can't be a
 plain HTTP scraper.
 
+## Sites
+
+The host loads one scraper per repo, so the sites that work like cinejoy
+(open a watch URL keyed by TMDB id in a real browser, read the media URL the
+player requests) are adapters inside `src/scraper.mts`, sharing capture,
+playlist verification and link building. `search()` returns one placeholder
+per site; `resolve()` runs the one that was picked.
+
+| Site | Player URL | Notes |
+|---|---|---|
+| cinejoy.pk | `/watch/movie/{tmdb}`, `/watch/tv/{tmdb}/{s}/{e}` | Clicks through its server list. |
+| flixer.gd | `/watch/movie/{tmdb}`, `/watch/tv/{tmdb}/{s}/{e}` | Autoplays; stream URL comes from a WASM module. Injects popunders (closed by the scraper). |
+| bciney.to | `player.bciney.to/embed/movie/{tmdb}`, `/embed/tv/{tmdb}/{s}/{e}` | Opens its embedded player directly; autoplays. Single low-res rendition. |
+
+Checked and left out: watch.spencerdevs.xyz plays in a browser, but its CDN
+returns 403 to any non-browser client, so the host could never fetch or relay
+the stream. The rest are behind Cloudflare/Turnstile challenges, an opaque
+third-party embed, or a rewrite-sized API flow.
+
+## Scraper contract
+
+The types come from the upstream `stremio-tv-plugin-web-links` repo, vendored
+as the `vendor/web-links` git submodule and imported type-only, so nothing
+from it ships in `dist/`. Clone with `--recurse-submodules` (or
+`git submodule update --init`). `npm run sync-contract` pulls upstream's
+latest; CI typechecks against upstream `main` on every run, and Dependabot
+opens PRs to bump the pin.
+
 ## Usage
 
 ```bash
