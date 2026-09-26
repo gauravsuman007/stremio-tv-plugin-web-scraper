@@ -24,17 +24,16 @@ __export(index_exports, {
 });
 module.exports = __toCommonJS(index_exports);
 
-// src/scraper.mts
+// src/shared.mts
 var import_playwright_core = require("playwright-core");
 var import_node_fs = require("node:fs");
-var BASE_URL = "https://cinejoy.pk";
 var TMDB_API_KEY = "8476a7ab80ad76f0936744df0430e67c";
 var TMDB_BASE = "https://api.themoviedb.org/3";
-var DEFAULT_PER_SERVER_TIMEOUT_MS = 2e4;
 var MASTER_PLAYLIST_RE = /\.m3u8(\?.*)?$/i;
 var DIRECT_FILE_RE = /\.(mp4|mkv|webm)(\?.*)?$/i;
 var SEGMENT_OR_INIT_RE = /(^|\/)(init|seg(ment)?[-_]?\d+|\d+)\.(mp4|m4s|webm)(\?.*)?$/i;
 var FILE_CANDIDATE_GRACE_MS = 4e3;
+var IGNORED_MEDIA_RE = /media-imdb\.com|youtube\.com|ytimg\.com|googlevideo\.com/i;
 async function tmdbSearch(fetchImpl, query) {
   const url = new URL(`${TMDB_BASE}/search/multi`);
   url.searchParams.set("api_key", TMDB_API_KEY);
@@ -73,20 +72,29 @@ async function tmdbFindByImdbId(fetchImpl, imdbId) {
   }
   return null;
 }
-async function listServers(fetchImpl) {
-  const response = await fetchImpl("https://api.wing.st/servers");
-  if (!response.ok) throw new Error(`Failed to list servers: ${response.status}`);
-  const data = await response.json();
-  return data.servers;
+var MATCH_TTL_MS = 6e4;
+var matchCache = /* @__PURE__ */ new Map();
+function resolveTmdbMatch(query, fetchImpl) {
+  const key = `${query.type}|${query.id}|${query.title}`;
+  const cached = matchCache.get(key);
+  if (cached && Date.now() - cached.at < MATCH_TTL_MS) return cached.match;
+  const match = lookupTmdbMatch(query, fetchImpl);
+  matchCache.set(key, { at: Date.now(), match });
+  match.catch(() => matchCache.delete(key));
+  return match;
 }
-function watchUrl(tmdbId, mediaType, season, episode) {
-  if (mediaType === "movie") return `${BASE_URL}/watch/movie/${tmdbId}`;
-  return `${BASE_URL}/watch/tv/${tmdbId}/${season ?? 1}/${episode ?? 1}`;
+async function lookupTmdbMatch(query, fetchImpl) {
+  const wantType = query.type === "series" || query.type === "tv" ? "tv" : "movie";
+  const imdbId = /^tt\d+/.exec(query.id)?.[0];
+  if (imdbId) return tmdbFindByImdbId(fetchImpl, imdbId);
+  const matches = await tmdbSearch(fetchImpl, query.title);
+  return matches.find((m) => m.mediaType === wantType) ?? matches[0] ?? null;
 }
-async function captureMediaUrl(page, timeoutMs, trigger) {
+async function captureMediaUrl(page, timeoutMs, trigger, options = {}) {
+  const playlistRe = options.isPlaylist ?? MASTER_PLAYLIST_RE;
   let resolveMedia;
-  const donePromise = new Promise((resolve2) => {
-    resolveMedia = resolve2;
+  const donePromise = new Promise((resolve) => {
+    resolveMedia = resolve;
   });
   let fileCandidate = null;
   let graceTimer = null;
@@ -99,7 +107,8 @@ async function captureMediaUrl(page, timeoutMs, trigger) {
   };
   const onRequest = (request) => {
     const url = request.url();
-    if (MASTER_PLAYLIST_RE.test(url)) {
+    if (IGNORED_MEDIA_RE.test(url)) return;
+    if (playlistRe.test(url)) {
       settle(url);
       return;
     }
@@ -110,10 +119,10 @@ async function captureMediaUrl(page, timeoutMs, trigger) {
   };
   page.on("request", onRequest);
   try {
-    await trigger();
+    await trigger(() => settled);
     return await Promise.race([
       donePromise,
-      new Promise((resolve2) => setTimeout(() => resolve2(null), timeoutMs))
+      new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs))
     ]);
   } catch {
     return null;
@@ -122,14 +131,8 @@ async function captureMediaUrl(page, timeoutMs, trigger) {
     if (graceTimer) clearTimeout(graceTimer);
   }
 }
-function selectServerAndCapture(page, serverName, timeoutMs) {
-  return captureMediaUrl(page, timeoutMs, async () => {
-    await page.getByRole("button", { name: "Servers", exact: true }).click();
-    await page.getByText(serverName, { exact: true }).first().click({ timeout: 5e3 });
-  });
-}
 async function expandMasterPlaylist(fetchImpl, masterUrl, referrer) {
-  if (!MASTER_PLAYLIST_RE.test(masterUrl)) {
+  if (DIRECT_FILE_RE.test(masterUrl)) {
     const response2 = await fetchImpl(masterUrl, { headers: { Referer: referrer, Range: "bytes=0-1023" } });
     if (!response2.ok) throw new Error(`direct file not fetchable: ${response2.status}`);
     return [{ resolution: null, bandwidth: null, url: masterUrl }];
@@ -166,92 +169,45 @@ function findChromiumExecutable() {
   }
   return void 0;
 }
-async function resolveTmdbMatch(query, fetchImpl) {
-  const wantType = query.type === "series" || query.type === "tv" ? "tv" : "movie";
-  const imdbId = /^tt\d+/.exec(query.id)?.[0];
-  if (imdbId) return tmdbFindByImdbId(fetchImpl, imdbId);
-  const matches = await tmdbSearch(fetchImpl, query.title);
-  return matches.find((m) => m.mediaType === wantType) ?? matches[0] ?? null;
-}
 var PAGE_LOAD_CAPTURE_TIMEOUT_MS = 2e4;
-async function* autoplayCapture(page, url, ctx) {
+async function* autoplayCapture(page, url, ctx, options = {}) {
   const timeoutMs = Math.min(PAGE_LOAD_CAPTURE_TIMEOUT_MS, Math.max(8e3, ctx.budgetMs));
   const mediaUrl = await captureMediaUrl(
     page,
     timeoutMs,
-    () => page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs })
+    async (isDone) => {
+      if (!options.clickPlay) {
+        await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+        return;
+      }
+      let armed = false;
+      await page.route("**/*", (route) => {
+        const request = route.request();
+        return armed && request.isNavigationRequest() && request.frame() === page.mainFrame() ? route.abort() : route.continue();
+      });
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+      armed = true;
+      for (let attempt = 0; attempt < 4 && !isDone(); attempt++) {
+        await page.locator('button:has-text("Play"), a:has-text("Play")').first().click({ timeout: 2500, force: true }).catch(() => {
+        });
+        await page.waitForTimeout(4e3);
+      }
+    },
+    options
   );
   if (mediaUrl) yield { mediaUrl };
 }
-var cinejoySite = {
-  id: "cinejoy",
-  name: "CineJoy",
-  referrer: `${BASE_URL}/`,
-  async available(ctx) {
-    return (await listServers(ctx.fetch)).some((s) => s.status === "ok");
-  },
-  async *captures(page, { match, season, episode }, ctx) {
-    const servers = (await listServers(ctx.fetch)).filter((s) => s.status === "ok").sort((a, b) => Number(b["4k"]) - Number(a["4k"]));
-    if (!servers.length) return;
-    const perServerTimeoutMs = Math.min(DEFAULT_PER_SERVER_TIMEOUT_MS, Math.max(5e3, ctx.budgetMs / servers.length));
-    await page.goto(watchUrl(match.tmdbId, match.mediaType, season, episode), {
-      waitUntil: "domcontentloaded",
-      timeout: perServerTimeoutMs
-    });
-    for (const server of servers) {
-      const mediaUrl = await selectServerAndCapture(page, server.name, perServerTimeoutMs);
-      if (mediaUrl) yield { mediaUrl, label: server.name };
-    }
-  }
-};
-var flixerSite = {
-  id: "flixer",
-  name: "Flixer",
-  referrer: "https://flixer.gd/",
-  async *captures(page, { match, season, episode }, ctx) {
-    const base = "https://flixer.gd/watch";
-    const url = match.mediaType === "movie" ? `${base}/movie/${match.tmdbId}` : `${base}/tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
-    yield* autoplayCapture(page, url, ctx);
-  }
-};
-var bcineySite = {
-  id: "bciney",
-  name: "bCine",
-  referrer: "https://player.bciney.to/",
-  async *captures(page, { match, season, episode }, ctx) {
-    const base = "https://player.bciney.to/embed";
-    const url = match.mediaType === "movie" ? `${base}/movie/${match.tmdbId}?autoplay=true` : `${base}/tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}?autoplay=true`;
-    yield* autoplayCapture(page, url, ctx);
-  }
-};
-var SITES = [cinejoySite, flixerSite, bcineySite];
-function siteFor(resolveId) {
-  return SITES.find((site) => site.id === resolveId) ?? cinejoySite;
+function variantHeight(variant) {
+  return Number.parseInt(variant.resolution?.split("x")[1] ?? "0", 10) || 0;
 }
-async function search(query, ctx) {
-  if (!findChromiumExecutable()) {
-    console.warn("[cinejoy] no Chromium binary found (set CHROMIUM_PATH, or apk add chromium) -- skipping");
-    return [];
-  }
-  const match = await resolveTmdbMatch(query, ctx.fetch);
-  if (!match) return [];
-  const displayTitle = match.year ? `${match.title} (${match.year})` : match.title;
-  const placeholders = await Promise.all(
-    SITES.map(async (site) => {
-      if (site.available && !await site.available(ctx).catch(() => false)) return null;
-      return { url: "", resolveId: site.id, resolveKind: "hls", title: `${displayTitle} \xB7 ${site.name}` };
-    })
-  );
-  return placeholders.filter((link) => link !== null);
+function heightFromUrl(url) {
+  return Number.parseInt(/[-_/.]s?(\d{3,4})p(?=[-_/.?]|$)/i.exec(url)?.[1] ?? "0", 10) || 0;
 }
-function qualityScore(variant) {
-  const height = Number.parseInt(variant.resolution?.split("x")[1] ?? "0", 10) || 0;
-  return height * 1e9 + (variant.bandwidth ?? 0);
-}
-async function resolve(resolveId, query, ctx) {
+var BEST_POSSIBLE_HEIGHT = 2160;
+var SOFT_DEADLINE_MS = 1e4;
+async function resolveSite(site, query, ctx) {
   const executablePath = findChromiumExecutable();
   if (!executablePath) return null;
-  const site = siteFor(resolveId);
   const match = await resolveTmdbMatch(query, ctx.fetch);
   if (!match) return null;
   const browser = await import_playwright_core.chromium.launch({
@@ -269,30 +225,53 @@ async function resolve(resolveId, query, ctx) {
     }));
     const displayTitle = match.year ? `${match.title} (${match.year})` : match.title;
     let best = null;
-    for await (const { mediaUrl, label } of site.captures(page, { match, season: query.season, episode: query.episode }, ctx)) {
-      let variants;
-      try {
-        variants = await expandMasterPlaylist(ctx.fetch, mediaUrl, site.referrer);
-      } catch {
-        continue;
-      }
-      const top = variants[0];
-      if (!top) continue;
-      const score = Math.max(...variants.map(qualityScore));
-      if (best && score <= best.score) continue;
-      const resolutions = variants.map((v) => v.resolution).filter((r) => Boolean(r));
-      const multi = MASTER_PLAYLIST_RE.test(mediaUrl) && variants.length > 1;
-      const mirror = label ? `${site.name} mirror: ${label}` : site.name;
-      best = {
-        score,
-        link: {
-          url: multi ? mediaUrl : top.url,
-          resolveKind: "hls",
-          quality: resolutions.length ? `${resolutions.join("/")} \xB7 ${label ?? site.name}` : mirror,
-          title: displayTitle,
-          referrer: site.referrer
+    const startedAt = Date.now();
+    const captures = site.captures(page, { match, season: query.season, episode: query.episode }, ctx);
+    try {
+      while (true) {
+        const pending = captures.next();
+        pending.catch(() => {
+        });
+        let step;
+        if (best) {
+          const remainingMs = SOFT_DEADLINE_MS - (Date.now() - startedAt);
+          if (remainingMs <= 0) break;
+          step = await Promise.race([pending, new Promise((r) => setTimeout(() => r(null), remainingMs))]);
+        } else {
+          step = await pending;
         }
-      };
+        if (!step || step.done) break;
+        const { mediaUrl, label } = step.value;
+        let variants;
+        try {
+          variants = await expandMasterPlaylist(ctx.fetch, mediaUrl, site.referrer);
+        } catch {
+          continue;
+        }
+        const top = variants[0];
+        if (!top) continue;
+        const height = Math.max(...variants.map(variantHeight)) || heightFromUrl(mediaUrl);
+        const score = height * 1e9 + Math.max(...variants.map((v) => v.bandwidth ?? 0));
+        if (best && score <= best.score) continue;
+        const resolutions = variants.map((v) => v.resolution).filter((r) => Boolean(r));
+        const multi = variants.length > 1;
+        const mirror = label ? `${site.name} mirror: ${label}` : site.name;
+        best = {
+          score,
+          height,
+          link: {
+            url: multi ? mediaUrl : top.url,
+            resolveKind: "hls",
+            quality: resolutions.length ? `${resolutions.join("/")} \xB7 ${label ?? site.name}` : height ? `${height}p \xB7 ${label ?? site.name}` : mirror,
+            title: displayTitle,
+            referrer: site.referrer
+          }
+        };
+        if (best.height >= BEST_POSSIBLE_HEIGHT) break;
+      }
+    } finally {
+      void captures.return(void 0).catch(() => {
+      });
     }
     if (best) return best.link;
     return null;
@@ -300,15 +279,139 @@ async function resolve(resolveId, query, ctx) {
     await browser.close();
   }
 }
-var cinejoyScraper = {
+async function searchSite(site, query, ctx) {
+  if (!findChromiumExecutable()) {
+    console.warn(`[${site.id}] no Chromium binary found (set CHROMIUM_PATH, or apk add chromium) -- skipping`);
+    return [];
+  }
+  const match = await resolveTmdbMatch(query, ctx.fetch);
+  if (!match) return [];
+  if (site.available && !await site.available(ctx).catch(() => false)) return [];
+  const displayTitle = match.year ? `${match.title} (${match.year})` : match.title;
+  return [{ url: "", resolveId: site.id, resolveKind: "hls", title: `${displayTitle} \xB7 ${site.name}` }];
+}
+function createScraper(site) {
+  return {
+    id: site.id,
+    name: `${site.name} \xB7 up to ${site.maxQuality}`,
+    search: (query, ctx) => searchSite(site, query, ctx),
+    resolve: (_resolveId, query, ctx) => resolveSite(site, query, ctx)
+  };
+}
+
+// src/sites/7movies.mts
+var sevenMoviesSite = {
+  id: "7movies",
+  name: "7Movies",
+  referrer: "https://embed.vidrift.net/",
+  maxQuality: "1080p",
+  async *captures(page, { match, season, episode }, ctx) {
+    const base = "https://embed.vidrift.net/embed2";
+    const url = match.mediaType === "movie" ? `${base}/movie/${match.tmdbId}` : `${base}/tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
+    yield* autoplayCapture(page, url, ctx);
+  }
+};
+var movies_default = createScraper(sevenMoviesSite);
+
+// src/sites/bciney.mts
+var bcineySite = {
+  id: "bciney",
+  name: "bCine",
+  referrer: "https://player.bciney.to/",
+  maxQuality: "1080p",
+  async *captures(page, { match, season, episode }, ctx) {
+    const base = "https://player.bciney.to/embed";
+    const url = match.mediaType === "movie" ? `${base}/movie/${match.tmdbId}?autoplay=true` : `${base}/tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}?autoplay=true`;
+    yield* autoplayCapture(page, url, ctx, { isPlaylist: /^https:\/\/v\.bciney\.to\/v\?url=/i });
+  }
+};
+var bciney_default = createScraper(bcineySite);
+
+// src/sites/cinejoy.mts
+var BASE_URL = "https://cinejoy.pk";
+var DEFAULT_PER_SERVER_TIMEOUT_MS = 2e4;
+async function listServers(fetchImpl) {
+  const response = await fetchImpl("https://api.wing.st/servers");
+  if (!response.ok) throw new Error(`Failed to list servers: ${response.status}`);
+  const data = await response.json();
+  return data.servers;
+}
+function watchUrl(tmdbId, mediaType, season, episode) {
+  if (mediaType === "movie") return `${BASE_URL}/watch/movie/${tmdbId}`;
+  return `${BASE_URL}/watch/tv/${tmdbId}/${season ?? 1}/${episode ?? 1}`;
+}
+function selectServerAndCapture(page, serverName, timeoutMs) {
+  return captureMediaUrl(page, timeoutMs, async () => {
+    await page.getByRole("button", { name: "Servers", exact: true }).click();
+    await page.getByText(serverName, { exact: true }).first().click({ timeout: 5e3 });
+  });
+}
+var cinejoySite = {
   id: "cinejoy",
   name: "CineJoy",
-  version: "1.6.0",
-  search,
-  resolve
+  referrer: `${BASE_URL}/`,
+  maxQuality: "4K",
+  async available(ctx) {
+    return (await listServers(ctx.fetch)).some((s) => s.status === "ok");
+  },
+  async *captures(page, { match, season, episode }, ctx) {
+    const servers = (await listServers(ctx.fetch)).filter((s) => s.status === "ok").sort((a, b) => Number(b["4k"]) - Number(a["4k"]));
+    if (!servers.length) return;
+    const perServerTimeoutMs = Math.min(DEFAULT_PER_SERVER_TIMEOUT_MS, Math.max(5e3, ctx.budgetMs / servers.length));
+    await page.goto(watchUrl(match.tmdbId, match.mediaType, season, episode), {
+      waitUntil: "domcontentloaded",
+      timeout: perServerTimeoutMs
+    });
+    for (const server of servers) {
+      const mediaUrl = await selectServerAndCapture(page, server.name, perServerTimeoutMs);
+      if (mediaUrl) yield { mediaUrl, label: server.name };
+    }
+  }
 };
-var scraper_default = cinejoyScraper;
+var cinejoy_default = createScraper(cinejoySite);
+
+// src/sites/flixer.mts
+var flixerSite = {
+  id: "flixer",
+  name: "Flixer",
+  referrer: "https://flixer.gd/",
+  maxQuality: "1080p",
+  async *captures(page, { match, season, episode }, ctx) {
+    const base = "https://flixer.gd/watch";
+    const url = match.mediaType === "movie" ? `${base}/movie/${match.tmdbId}` : `${base}/tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
+    yield* autoplayCapture(page, url, ctx);
+  }
+};
+var flixer_default = createScraper(flixerSite);
+
+// src/sites/movy.mts
+var movySite = {
+  id: "movy",
+  name: "Movy",
+  referrer: "https://movy.sx/",
+  maxQuality: "1080p",
+  async *captures(page, { match, season, episode }, ctx) {
+    const base = "https://movy.sx";
+    const url = match.mediaType === "movie" ? `${base}/movie/${match.tmdbId}` : `${base}/tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
+    yield* autoplayCapture(page, url, ctx, { clickPlay: true });
+  }
+};
+var movy_default = createScraper(movySite);
+
+// src/sites/shuttletv.mts
+var shuttletvSite = {
+  id: "shuttletv",
+  name: "ShuttleTV",
+  referrer: "https://cinesrc.st/",
+  maxQuality: "4K",
+  async *captures(page, { match, season, episode }, ctx) {
+    const base = "https://cinesrc.st/embed";
+    const url = match.mediaType === "movie" ? `${base}/movie/${match.tmdbId}` : `${base}/tv/${match.tmdbId}?season=${season ?? 1}&episode=${episode ?? 1}`;
+    yield* autoplayCapture(page, url, ctx, { isPlaylist: /^https:\/\/cinesrc\.st\/api\/playlist\//i });
+  }
+};
+var shuttletv_default = createScraper(shuttletvSite);
 
 // src/index.mts
-var scrapers = [scraper_default].map((scraper) => ({ ...scraper, version: "1.8.1" }));
+var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default].map((scraper) => ({ ...scraper, version: "1.10.0" }));
 var index_default = scrapers;
