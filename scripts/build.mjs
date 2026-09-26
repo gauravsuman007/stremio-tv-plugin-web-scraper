@@ -21,7 +21,7 @@ rmSync("dist", { recursive: true, force: true });
 mkdirSync("dist", { recursive: true });
 
 execSync(
-    "npx esbuild src/scraper.mts --bundle --platform=node --format=cjs --outfile=dist/cinejoy.cjs " +
+    "npx esbuild src/index.mts --bundle --platform=node --format=cjs --outfile=dist/cinejoy.cjs " +
         "--external:playwright-core --external:chromium-bidi --external:bufferutil --external:utf-8-validate",
     { stdio: "inherit" }
 );
