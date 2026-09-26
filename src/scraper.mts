@@ -343,6 +343,15 @@ async function search(query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink
  * retry by hand if it happens to be the one that's down. `resolveId` is
  * unused: there is only ever one candidate now (see `search()` above), so
  * there is nothing for it to select between.
+ *
+ * SERVERS FLAGGED `4k` GO FIRST, BUT THIS IS A HINT, NOT A GUARANTEE.
+ * `listServers` carries a site-wide capability flag, not a per-title one --
+ * measured against a title with no 4K release at all, a 4k-flagged mirror
+ * and a plain one served the identical 1080p/720p pair from the identical
+ * URL, so the flag can be wrong for a given file. It still costs nothing to
+ * ask the flagged mirror first: the loop already tries every server in
+ * order until one plays, so trying the more-capable one first can only
+ * ever help, never delay a title that has nothing higher to offer.
  */
 async function resolve(_resolveId: string, query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink | null> {
     const executablePath = findChromiumExecutable();
@@ -351,7 +360,9 @@ async function resolve(_resolveId: string, query: WebLinkQuery, ctx: ScraperCont
     const match = await resolveTmdbMatch(query, ctx.fetch);
     if (!match) return null;
 
-    const servers = (await listServers(ctx.fetch)).filter((s) => s.status === "ok");
+    const servers = (await listServers(ctx.fetch))
+        .filter((s) => s.status === "ok")
+        .sort((a, b) => Number(b["4k"]) - Number(a["4k"]));
     if (!servers.length) return null;
 
     const perServerTimeoutMs = Math.min(DEFAULT_PER_SERVER_TIMEOUT_MS, Math.max(5_000, ctx.budgetMs / servers.length));
@@ -391,10 +402,29 @@ async function resolve(_resolveId: string, query: WebLinkQuery, ctx: ScraperCont
             const best = variants[0]; // sorted by bandwidth, highest first.
             if (!best) continue;
 
+            /*
+                A REAL MASTER, WITH SOMETHING TO PICK BETWEEN, GOES THROUGH
+                WHOLE -- not flattened to its best variant. Measured: this
+                site's own master playlists commonly carry two or three
+                resolutions (1080p and 720p, here), which is exactly the
+                shape a viewer might want a say over rather than always
+                getting the top one silently. `web-links`' own relay
+                (`rewritePlaylist`) already knows how to route a master's
+                variant lines back through itself, same as it does for a
+                leaf playlist's segments -- see its own doc comment. A
+                single-variant result (a plain file, or a master with only
+                one rendition) has nothing to pick between, so it keeps
+                going out flattened exactly as before.
+            */
+            const resolutions = variants.map((v) => v.resolution).filter((r): r is string => Boolean(r));
+            const multi = MASTER_PLAYLIST_RE.test(mediaUrl) && variants.length > 1;
+
             return {
-                url: best.url,
+                url: multi ? mediaUrl : best.url,
                 resolveKind: "hls",
-                quality: best.resolution ? `${best.resolution} · ${server.name}` : `CineJoy mirror: ${server.name}`,
+                quality: resolutions.length
+                    ? `${resolutions.join("/")} · ${server.name}`
+                    : `CineJoy mirror: ${server.name}`,
                 title: displayTitle,
                 referrer: `${BASE_URL}/`
             };
@@ -409,7 +439,7 @@ async function resolve(_resolveId: string, query: WebLinkQuery, ctx: ScraperCont
 const cinejoyScraper: WebLinkScraper = {
     id: "cinejoy",
     name: "CineJoy",
-    version: "1.3.0",
+    version: "1.4.0",
     search,
     resolve
 };

@@ -190,7 +190,7 @@ async function resolve(_resolveId, query, ctx) {
   if (!executablePath) return null;
   const match = await resolveTmdbMatch(query, ctx.fetch);
   if (!match) return null;
-  const servers = (await listServers(ctx.fetch)).filter((s) => s.status === "ok");
+  const servers = (await listServers(ctx.fetch)).filter((s) => s.status === "ok").sort((a, b) => Number(b["4k"]) - Number(a["4k"]));
   if (!servers.length) return null;
   const perServerTimeoutMs = Math.min(DEFAULT_PER_SERVER_TIMEOUT_MS, Math.max(5e3, ctx.budgetMs / servers.length));
   const browser = await import_playwright_core.chromium.launch({
@@ -220,10 +220,12 @@ async function resolve(_resolveId, query, ctx) {
       }
       const best = variants[0];
       if (!best) continue;
+      const resolutions = variants.map((v) => v.resolution).filter((r) => Boolean(r));
+      const multi = MASTER_PLAYLIST_RE.test(mediaUrl) && variants.length > 1;
       return {
-        url: best.url,
+        url: multi ? mediaUrl : best.url,
         resolveKind: "hls",
-        quality: best.resolution ? `${best.resolution} \xB7 ${server.name}` : `CineJoy mirror: ${server.name}`,
+        quality: resolutions.length ? `${resolutions.join("/")} \xB7 ${server.name}` : `CineJoy mirror: ${server.name}`,
         title: displayTitle,
         referrer: `${BASE_URL}/`
       };
@@ -236,7 +238,7 @@ async function resolve(_resolveId, query, ctx) {
 var cinejoyScraper = {
   id: "cinejoy",
   name: "CineJoy",
-  version: "1.3.0",
+  version: "1.4.0",
   search,
   resolve
 };
