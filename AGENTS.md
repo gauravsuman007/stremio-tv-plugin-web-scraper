@@ -24,6 +24,10 @@ Every change to a scraper's behaviour (or the shared code under `src/`) needs a 
 
 [SOURCES.md](SOURCES.md) tracks every site considered (implemented / candidate / possible / untriaged / rejected) and the upstream players behind them. Before hunting for new sites, read it -- don't retry a rejected one. Update it in the same commit whenever a source changes status, and record the reason for a rejection. [STRATEGIES.md](STRATEGIES.md) holds the worked-out request recipes (endpoints, keys, required headers, what was verified) for every candidate: **build from it, don't redo the research**, and add a recipe there whenever you solve a new source.
 
+## Check a source against the host before building it
+
+A source that plays in ffmpeg can still be unplayable through stremio-tv. The web-links relay (`vendor/web-links/src/plugin.mts`) sends **only `Referer`** on every playlist/segment fetch and rewrites every `URI="..."` in a playlist as a *segment* (including `#EXT-X-MEDIA` audio/subtitle tracks). So before writing a scraper, confirm with Referer alone (following redirects) that the master, a leaf and a segment all fetch, and that the video rendition has its own audio (`ffprobe` a leaf). Sources that fail this are recorded as `blocked` in SOURCES.md with the host change they need; don't ship them.
+
 ## Handling the streams these scrapers return
 
 Read this if you are the app playing a returned `WebLink` (stremio-tv's web-links host, or anything else). Measured against real playback (ffmpeg decoding 8s of each link), not assumed.

@@ -11,6 +11,7 @@ import bcineyScraper from "./sites/bciney.mts";
 import cinejoyScraper from "./sites/cinejoy.mts";
 import flixerScraper from "./sites/flixer.mts";
 import movyScraper from "./sites/movy.mts";
+import moviesapiScraper from "./sites/moviesapi.mts";
 import shuttletvScraper from "./sites/shuttletv.mts";
 
 /** Replaced at build time (esbuild `--define`) with package.json's version,
@@ -18,6 +19,6 @@ import shuttletvScraper from "./sites/shuttletv.mts";
  *  drifts from the manifest and the plugins page then shows a stale one. */
 declare const __PACKAGE_VERSION__: string;
 
-const scrapers: WebLinkScraper[] = [cinejoyScraper, flixerScraper, bcineyScraper, movyScraper, shuttletvScraper, sevenMoviesScraper, cinezoScraper].map((scraper) => ({ ...scraper, version: __PACKAGE_VERSION__ }));
+const scrapers: WebLinkScraper[] = [cinejoyScraper, flixerScraper, bcineyScraper, movyScraper, shuttletvScraper, sevenMoviesScraper, cinezoScraper, moviesapiScraper].map((scraper) => ({ ...scraper, version: __PACKAGE_VERSION__ }));
 
 export default scrapers;

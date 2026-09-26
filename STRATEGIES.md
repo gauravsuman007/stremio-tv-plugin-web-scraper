@@ -8,22 +8,22 @@ ffmpeg -v error -rw_timeout 15000000 -user_agent "<browser UA>" \
   -i "<url>" -t 8 -f null -
 ```
 
-All of these are `HttpSite` scrapers (no Chromium): put the API call in `httpCaptures`, yield `{mediaUrl, label}`, let `pickBestCapture` do the rest. Cross-cutting lessons:
+All of these are `HttpSite` scrapers (no Chromium): put the API call in `httpCaptures`, yield `{mediaUrl, label}`, let `pickBestCapture` do the rest. Cross-cutting lessons (read the first one before building anything):
 
-- **Send `Origin` as well as `Referer`.** Several CDNs (Cloudflare Workers fronts) return 403 to Referer alone and 200 once `Origin` matches; a browser always sends both. Set `WebLink.referrer` to the site root and have the consuming app send Origin too (AGENTS.md currently says Referer only -- update it when the first of these ships).
+- **Host limits decide what can ship** (checked against `vendor/web-links/src/plugin.mts`). The relay sends only `Referer` (no `Origin`, no other headers) on every playlist and segment fetch, and it rewrites every `URI="..."` in a playlist -- including `#EXT-X-MEDIA` audio/subtitle tracks -- as a *segment*, never as a nested playlist. So a source is shippable only if it plays with the Referer alone **and** its video rendition carries its own audio. Test with Referer only (`hls.mjs`-style: follow redirects, walk master -> leaf -> first segment) before writing a scraper; ffmpeg with Origin proves nothing about the host. Measured: moviesapi, atlantic, vidlove, vidnest `nextgencloudfabric`, vixsrc's playlists all play Referer-only (a 302 without Origin just redirects); **vidrock Orion/Luna need `Origin`** (403 without) and **vixsrc video leaves have no audio** (see their sections). Unblocking them is a host change, not a scraper change.
 - Tokens are short-lived; always resolve at play time.
 - A server that answers with a master is not necessarily playable: check a segment. Leaf-playlist duration (`leafDuration`) already catches stubs; segments on a forbidden CDN (see vidrock's Atlas) need a segment fetch, which `pickBestCapture` does not do today.
 
 ---
 
-## vidrock.net  (status: candidate)
+## vidrock.net  (status: blocked by the host -- needs `Origin`)
 
 Pure HTTP; the server list is AES-GCM encrypted with a key shipped in the client bundle.
 
 1. `GET https://vidrock.net/api/movie/{tmdb}` or `/api/tv/{tmdb}/{season}/{episode}` with `Referer: https://vidrock.net/`. Returns an object keyed by server name (`Nova`, `Atlas`, `Luna`, `Orion`, `Astra`); each is `{url, type:"hls", language, flag}` or `{url:null}`.
 2. Decrypt each `url`: base64url -> bytes; first 12 bytes are the IV, the rest is ciphertext+tag; AES-GCM, key = hex `7f3e9c2a8b5d1f4e6a9c3b7d2e5f8a1c4b6d9e2f5a8c1b4d7e9f2a5c8b1d4e7f`. Node: `crypto.subtle.importKey("raw", Buffer.from(KEY,"hex"), "AES-GCM", false, ["decrypt"])`, then `decrypt({name:"AES-GCM", iv}, key, rest)`. (The key is in `assets/index-*.js` as the constant next to `crypto.subtle.importKey`; if decryption starts failing, re-read it from there.)
 3. Plaintext is the HLS master URL.
-4. Send `Referer: https://vidrock.net/` **and** `Origin: https://vidrock.net`.
+4. Send `Referer: https://vidrock.net/` **and** `Origin: https://vidrock.net`. **Both Orion and Luna answer 403 to Referer alone** (Orion with a Cloudflare page, Luna "Forbidden"), and the host relay never sends Origin, so a link from this scraper would fail at playback. Ship it when `WebLink` (and the relay) can carry an `origin` or extra request headers -- suggested contract addition: `headers?: Record<string,string>` applied to every playlist/segment fetch. Everything else about the recipe is verified.
 
 Servers seen:
 
@@ -38,19 +38,19 @@ Because Atlas returns a plausible master, a scraper must not take the first serv
 
 ---
 
-## moviesapi.to / vidspark.to  (status: candidate -- best quality found)
+## moviesapi.to / vidspark.to  (status: implemented in 1.12.0 -- `src/sites/moviesapi.mts`)
 
 Pure HTTP with a static key. This is the backend behind **PressPlay** (pressplayz.to only iframes it; its `/api/player-servers` lists moviesapi.to, vidspark.to, cdn.vidspark.to and vidfast.pro) and vidnest's `vidxyz` server.
 
 1. `GET https://moviesapi.to/api/vidora/v1/movie/{tmdb}` or `/api/vidora/v1/tv/{tmdb}/{season}/{episode}` with headers `x-player-key: 3a67e8866ae1d2bb9e81fe7f73315a56eb3bdf5e3e755c7554c8be6910aa6b13` (a constant in `assets/index-*.js`; without it, 401), `Referer: https://moviesapi.to/`, `Origin: https://moviesapi.to`.
 2. JSON: `{result, title, tmdb_id, imdb_id, year, sources:[{file_code, url, source:"vidora", tracks}]}`. `sources[0].url` is a master on `*.workers.dev` (`north-man.kurututujohn.workers.dev/hls2/..../master.m3u8?t=...&s=...&e=43200`) that redirects to `bx.netrocdn.site`; fetch it with `redirect: "follow"`.
-3. Playlist and segments both need `Referer` **and** `Origin` `https://moviesapi.to` (Referer alone -> 302, no headers -> 403).
+3. Playlist and segments need the `Referer` `https://moviesapi.to/` (no headers -> 403; the master redirects, so follow redirects). `Origin` is not needed. The API call itself is made with Origin too, as the player does.
 
-Checked: movie 27205 (1920x1080, 8888 s), 238 (1920x1080, 10629 s), 872585 (1920x872), TV 1399 S1E1 (1280x720 + 1920x1080, 3697 s). ffmpeg decodes. Segments are direct (no signed proxy) and were still valid 30 s after the playlist fetch; ~6 MB each, so genuine high bitrate 1080p. `source:"vidora"`; the `sources` array had a single entry each time.
+Checked: movie 27205 (1920x1080, 8888 s), 238 (1920x1080, 10629 s), 872585 (1920x872), TV 1399 S1E1 (1280x720 + 1920x1080, 3697 s). ffmpeg decodes. Segments are direct (no signed proxy) and were still valid 30 s after the playlist fetch; ~6 MB each, so genuine high bitrate 1080p. `source:"vidora"`; the `sources` array had a single entry each time. One rendition, H.264 + AAC muxed, no `EXT-X-KEY`. Shipped and run through the real scraper on 10 titles: 7 resolved (1s each), 3 upstream gaps (Casablanca and The Last of Us answer 502; Breaking Bad S1E2 answers 404 "No Vidora link").
 
 ---
 
-## vixsrc.to  (status: candidate)
+## vixsrc.to  (status: blocked by the host -- video leaves have no audio)
 
 Pure HTTP, no key.
 
@@ -58,7 +58,9 @@ Pure HTTP, no key.
 2. `GET https://vixsrc.to{src}` (Referer `https://vixsrc.to/movie/{tmdb}`). The HTML contains `window.masterPlaylist = { params: {token, expires, asn}, url: 'https://vixsrc.to/playlist/{id}?b=1' }` and `window.canPlayFHD`. Extract `url`, `token`, `expires` by regex.
 3. Master URL = `{url}&token={token}&expires={expires}` (plus `&h=1` when `canPlayFHD` is true, and `&lang=en`). Fetch with `Referer: https://vixsrc.to/`. It is a real master with `#EXT-X-MEDIA` audio (English, Italian) and subtitle tracks; the variants' URLs carry their own per-rendition tokens.
 
-Checked: movie 27205, 238, 157336, 872585 (API answers), TV 1399 S1E1 (API answers); playlist decoded in ffmpeg for 27205. Renditions in the master head: 480p, 720p (1080p not confirmed; check with `h=1`). It is the StreamingCommunity catalogue (Italian-first), so coverage differs. Streaming Unity is a front-end for it.
+**Why it is blocked:** the video renditions are video-only (ffprobe on a leaf: `h264` video, no audio stream). Audio is a separate `#EXT-X-MEDIA:TYPE=AUDIO` playlist (Italian default, English) and the leaves are `AES-128` with a relative key (`/storage/enc.key`). The host's relay rewrites `URI="..."` attributes as segments, so it would hand the browser the raw audio *playlist* with its absolute, unproxied segment URLs; flattening to one video leaf (what a single-rendition result does) gives silent video. Ship it once the host routes `#EXT-X-MEDIA` URIs through its variant route (rewriting them as nested playlists). Referer alone is enough for everything else. A scraper cannot fix this: `WebLink` has no way to carry a separate audio playlist.
+
+Checked: movie 27205, 238, 157336, 872585 (API answers), TV 1399 S1E1 (API answers); playlist decoded in ffmpeg for 27205. Renditions: 854x480 and 1280x720 only (`h=1` did not add 1080p). It is the StreamingCommunity catalogue (Italian-first), so coverage differs. Streaming Unity is a front-end for it.
 
 ---
 

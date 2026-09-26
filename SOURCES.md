@@ -4,13 +4,14 @@ Every source considered for this bundle, so the list can be worked through. The 
 
 - **implemented** -- shipped in `src/index.mts`.
 - **candidate** -- verified by hand to give a playable HLS link (ffmpeg decode) with plain HTTP or a simple browser step; ready to build.
+- **blocked** -- works end to end in ffmpeg, but the current host (`vendor/web-links`) can't play it: it sends only `Referer`, and rewrites `#EXT-X-MEDIA` URIs as segments. Needs a host change, see STRATEGIES.md.
 - **possible** -- a real lead, but needs work (decryption, a gate to understand) before it is a candidate.
 - **untriaged** -- reachable, no blocker seen, not yet examined. `embeds:` lists upstream players its bundles reference; if one of those becomes a scraper, this site is covered too.
 - **rejected** -- blocked (Cloudflare/Turnstile/captcha, sign-up, bot detection), dead, or DASH-only. Reasons are recorded so nobody retries them blindly. The rules in AGENTS.md still apply: challenges and bot detection are not bypassed.
 
-Sources: the *Stream Aggregators*, *Dedicated-Server* and *Multi-Server* sections of <https://fmhy.net/video> (checked 2026-09-27), plus atlantic.st, nepu.io, ee3.me and pressplayz.to supplied directly. Triage was a single homepage fetch per site (status, Cloudflare/Turnstile markers, sign-in redirect) plus a scan of its JS bundles for the upstream players it references.
+Sources: the *Stream Aggregators*, *Dedicated-Server*, *Multi-Server* and *P-Stream Forks* sections of <https://fmhy.net/video> (checked 2026-09-27), plus atlantic.st, nepu.io, ee3.me and pressplayz.to supplied directly. Triage was a single homepage fetch per site (status, Cloudflare/Turnstile markers, sign-in redirect) plus a scan of its JS bundles for the upstream players it references.
 
-Totals: implemented 7, candidate 3, possible 0, untriaged 104, rejected 37 (151 sites).
+Totals: implemented 8, candidate 1, blocked 1, possible 0, untriaged 104, rejected 49 (163 sites).
 
 ## Upstream players (where the leverage is)
 
@@ -19,9 +20,9 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | Upstream | Status | Notes |
 |---|---|---|
 | player.cinezo.live / proxy1.flikhub.net | implemented | Cinezo scraper. HTTP only. |
-| moviesapi.to / vidspark.to | candidate | Best find: real 1080p, static `x-player-key`, plain JSON API. Also the backend of PressPlay and vidnest `vidxyz`. See STRATEGIES.md. |
-| vixsrc.to | candidate | Pure HTTP; tokenised master from the embed page. Italian-first catalogue. Backend of Streaming Unity. See STRATEGIES.md. |
-| vidrock.net | candidate | Pure HTTP; AES-GCM with a key in the bundle; use servers Orion (1080p) and Luna, skip Atlas (dead segments). Needs Origin. See STRATEGIES.md. |
+| moviesapi.to / vidspark.to | implemented | Shipped in 1.12.0. Best find: real 1080p, static `x-player-key`, plain JSON API. Also the backend of PressPlay and vidnest `vidxyz`. See STRATEGIES.md. |
+| vixsrc.to | blocked | Video leaves have no audio; audio is a separate EXT-X-MEDIA playlist the host mis-rewrites. Pure HTTP; tokenised master from the embed page. Italian-first catalogue. Backend of Streaming Unity. See STRATEGIES.md. |
+| vidrock.net | blocked | Orion/Luna 403 without an Origin header, which the host never sends. Pure HTTP; AES-GCM with a key in the bundle; use servers Orion (1080p) and Luna, skip Atlas (dead segments). Needs Origin. See STRATEGIES.md. |
 | api.vidlove.cc (player.vidlove.cc, 111movies.net) | candidate | Pure HTTP, Cinezo-style API, `sources=vidapi`. See STRATEGIES.md. |
 | atlantic.st (stream.hls.lol) | candidate | Pure HTTP; AES-GCM key in the bundle; three servers. See STRATEGIES.md. |
 | new.vidnest.fun | candidate | Keyless custom-alphabet base64; routes per upstream. `nextgencloudfabric` and `allmovies` (Hindi) work; others broken or PNG-segment. See STRATEGIES.md. |
@@ -37,10 +38,11 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | vidcore.net / vidcore.io | rejected | 403 (checked earlier). |
 | cinesrc.st | implemented | ShuttleTV's backend (shuttletv scraper). |
 
-## Implemented (7)
+## Implemented (8)
 
 | Site | Section | Note |
 |---|---|---|
+| [PressPlay](https://pressplayz.to/) | dedicated-server | covered by MoviesAPI: it only iframes moviesapi.to / vidspark.to / vidfast.pro |
 | [7Movies](https://7movies.ac/) | stream-aggregators | sevenMovies |
 | [ArrowTV, 2 or Cinezo, 2](https://arrowtv.net/) | stream-aggregators | cinezo (Cinezo) |
 | [bCine](https://bcine.ru/) | stream-aggregators | bciney |
@@ -49,13 +51,17 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | [Movy](https://www.movy.sx/) | stream-aggregators | movy |
 | [ShuttleTV, 2, 3](https://shuttletv.su/) | stream-aggregators | shuttletv |
 
-## Candidates (verified, ready to build) (3)
+## Candidates (verified, ready to build) (1)
 
 | Site | Section | Note |
 |---|---|---|
 | [Atlantic](https://atlantic.st/) | dedicated-server | Own API `stream.hls.lol/helios` + AES-GCM key in the bundle; 3 servers, works for movie and TV. Recipe in STRATEGIES.md. |
-| [PressPlay](https://pressplayz.to/) | dedicated-server | Only iframes moviesapi.to / vidspark.to / vidfast.pro; build **moviesapi.to** (real 1080p) instead. Recipe in STRATEGIES.md. |
-| [Streaming Unity](https://streamingunity.vip/) | dedicated-server | Front-end for **vixsrc.to** (recipe in STRATEGIES.md). |
+
+## Blocked (works, but the host cannot play it yet) (1)
+
+| Site | Section | Note |
+|---|---|---|
+| [Streaming Unity](https://streamingunity.vip/) | dedicated-server | Front-end for **vixsrc.to**; blocked with it (see STRATEGIES.md). |
 
 ## Possible (leads) (0)
 
@@ -171,7 +177,7 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | [Watchott or EmnexMovies](https://watchott.org/) | stream-aggregators | no known upstream seen in its bundles; needs its own look |
 | [Willow](https://willow.arlen.icu/) | stream-aggregators | no known upstream seen in its bundles; needs its own look |
 
-## Rejected (37)
+## Rejected (49)
 
 | Site | Section | Note |
 |---|---|---|
@@ -191,6 +197,18 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | [ONOFLIX, 2 or GGFlix](https://onoflix.live/) | multi-server | dead/gated: HTTP 523 (origin down) |
 | [Pawflix](https://pawflix.foo.ng/) | multi-server | dead/gated: invite only (/forbidden) |
 | [Streaming CSE, 2, 3, 4](https://cse.google.com/cse?cx=006516753008110874046:cfdhwy9o57g##gsc.tab=0) | multi-server | dead/gated: Google custom search, not a source |
+| [Aether](https://aether.ist/) | p-stream-forks | P-Stream fork: a front-end for the shared `@p-stream/providers` library, which runs in the browser with the extension/userscript injecting headers. No backend of its own to scrape; the library repo (`p-stream/providers`) is blocked on GitHub for a DMCA takedown, so it is not used. Revisit only if a fork exposes its own API. |
+| [Basement](https://basementx.lol/) | p-stream-forks | P-Stream fork: a front-end for the shared `@p-stream/providers` library, which runs in the browser with the extension/userscript injecting headers. No backend of its own to scrape; the library repo (`p-stream/providers`) is blocked on GitHub for a DMCA takedown, so it is not used. Revisit only if a fork exposes its own API. |
+| [Cinecat](https://cinecat.eu/) | p-stream-forks | P-Stream fork: a front-end for the shared `@p-stream/providers` library, which runs in the browser with the extension/userscript injecting headers. No backend of its own to scrape; the library repo (`p-stream/providers`) is blocked on GitHub for a DMCA takedown, so it is not used. Revisit only if a fork exposes its own API. |
+| [Cinefork](https://cinefork.net/) | p-stream-forks | P-Stream fork: a front-end for the shared `@p-stream/providers` library, which runs in the browser with the extension/userscript injecting headers. No backend of its own to scrape; the library repo (`p-stream/providers`) is blocked on GitHub for a DMCA takedown, so it is not used. Revisit only if a fork exposes its own API. |
+| [FMFAU](https://fmfau.com/) | p-stream-forks | P-Stream fork: a front-end for the shared `@p-stream/providers` library, which runs in the browser with the extension/userscript injecting headers. No backend of its own to scrape; the library repo (`p-stream/providers`) is blocked on GitHub for a DMCA takedown, so it is not used. Revisit only if a fork exposes its own API. |
+| [IceFY](https://icefy.top/) | p-stream-forks | P-Stream fork: a front-end for the shared `@p-stream/providers` library, which runs in the browser with the extension/userscript injecting headers. No backend of its own to scrape; the library repo (`p-stream/providers`) is blocked on GitHub for a DMCA takedown, so it is not used. Revisit only if a fork exposes its own API. |
+| [kstream](https://kdesa.stream/) | p-stream-forks | P-Stream fork: a front-end for the shared `@p-stream/providers` library, which runs in the browser with the extension/userscript injecting headers. No backend of its own to scrape; the library repo (`p-stream/providers`) is blocked on GitHub for a DMCA takedown, so it is not used. Revisit only if a fork exposes its own API. |
+| [NovaShow](https://novashow.live/) | p-stream-forks | P-Stream fork: a front-end for the shared `@p-stream/providers` library, which runs in the browser with the extension/userscript injecting headers. No backend of its own to scrape; the library repo (`p-stream/providers`) is blocked on GitHub for a DMCA takedown, so it is not used. Revisit only if a fork exposes its own API. |
+| [P-Stream Fork](https://pstream.cfd/) | p-stream-forks | P-Stream fork: a front-end for the shared `@p-stream/providers` library, which runs in the browser with the extension/userscript injecting headers. No backend of its own to scrape; the library repo (`p-stream/providers`) is blocked on GitHub for a DMCA takedown, so it is not used. Revisit only if a fork exposes its own API. |
+| [peestream](https://peestream.in/) | p-stream-forks | P-Stream fork: a front-end for the shared `@p-stream/providers` library, which runs in the browser with the extension/userscript injecting headers. No backend of its own to scrape; the library repo (`p-stream/providers`) is blocked on GitHub for a DMCA takedown, so it is not used. Revisit only if a fork exposes its own API. |
+| [Rizz Stream](https://rizzking.org/) | p-stream-forks | P-Stream fork: a front-end for the shared `@p-stream/providers` library, which runs in the browser with the extension/userscript injecting headers. No backend of its own to scrape; the library repo (`p-stream/providers`) is blocked on GitHub for a DMCA takedown, so it is not used. Revisit only if a fork exposes its own API. |
+| [StreamWatch](https://streamwatch.online/) | p-stream-forks | P-Stream fork: a front-end for the shared `@p-stream/providers` library, which runs in the browser with the extension/userscript injecting headers. No backend of its own to scrape; the library repo (`p-stream/providers`) is blocked on GitHub for a DMCA takedown, so it is not used. Revisit only if a fork exposes its own API. |
 | [67Movies or PhantomFlix](https://67movies.st/) | stream-aggregators | checked earlier, no usable stream (now a parked-style page) |
 | [Bingr](https://bingr.one/) | stream-aggregators | Cloudflare challenge / 403 on the homepage (fetch test) |
 | [Cinetaro](https://cinetaro.to/) | stream-aggregators | Cloudflare challenge / 403 on the homepage (fetch test) |
