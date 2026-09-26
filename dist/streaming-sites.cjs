@@ -29,7 +29,7 @@ var import_playwright_core = require("playwright-core");
 var import_node_fs = require("node:fs");
 var TMDB_API_KEY = "8476a7ab80ad76f0936744df0430e67c";
 var TMDB_BASE = "https://api.themoviedb.org/3";
-var MASTER_PLAYLIST_RE = /\.m3u8(\?.*)?$/i;
+var MASTER_PLAYLIST_RE = /\.m3u8(?:[?&#].*)?$/i;
 var DIRECT_FILE_RE = /\.(mp4|mkv|webm)(\?.*)?$/i;
 var SEGMENT_OR_INIT_RE = /(^|\/)(init|seg(ment)?[-_]?\d+|\d+)\.(mp4|m4s|webm)(\?.*)?$/i;
 var FILE_CANDIDATE_GRACE_MS = 4e3;
@@ -317,15 +317,26 @@ function createScraper(site) {
 }
 
 // src/sites/7movies.mts
+var BASE = "https://embed.vidrift.net";
 var sevenMoviesSite = {
   id: "7movies",
   name: "7Movies",
   referrer: "https://embed.vidrift.net/",
   maxQuality: "1080p",
   async *captures(page, { match, season, episode }, ctx) {
-    const base = "https://embed.vidrift.net/embed2";
-    const url = match.mediaType === "movie" ? `${base}/movie/${match.tmdbId}` : `${base}/tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
-    yield* autoplayCapture(page, url, ctx);
+    const path = match.mediaType === "movie" ? `movie/${match.tmdbId}` : `tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
+    try {
+      const response = await ctx.fetch(`${BASE}/api/boot/${path}`, { headers: { Referer: `${BASE}/` } });
+      if (response.ok) {
+        const boot = await response.json();
+        for (const stream of boot.meta?.warmStreams ?? []) {
+          const mediaUrl = stream.proxyUrl || stream.url;
+          if (mediaUrl && stream.type !== "dash") yield { mediaUrl, label: stream.provider || void 0 };
+        }
+      }
+    } catch {
+    }
+    yield* autoplayCapture(page, `${BASE}/embed2/${path}`, ctx);
   }
 };
 var movies_default = createScraper(sevenMoviesSite);
@@ -360,7 +371,7 @@ var bcineySite = {
   async *captures(page, { match, season, episode }, ctx) {
     const base = "https://player.bciney.to/embed";
     const url = match.mediaType === "movie" ? `${base}/movie/${match.tmdbId}?autoplay=true` : `${base}/tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}?autoplay=true`;
-    yield* autoplayCapture(page, url, ctx, { isPlaylist: /^https:\/\/v\.bciney\.to\/v\?url=/i });
+    yield* autoplayCapture(page, url, ctx, { isPlaylist: /^https:\/\/v\.bciney\.to\/v\?url=|\.m3u8(?:[?&#].*)?$/i });
   }
 };
 var bciney_default = createScraper(bcineySite);
@@ -417,7 +428,7 @@ var flixerSite = {
   async *captures(page, { match, season, episode }, ctx) {
     const base = "https://flixer.gd/watch";
     const url = match.mediaType === "movie" ? `${base}/movie/${match.tmdbId}` : `${base}/tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
-    yield* autoplayCapture(page, url, ctx);
+    yield* autoplayCapture(page, url, ctx, { isPlaylist: /^https:\/\/serve\.dragonballzfans\.xyz\/proxy\?data=/i });
   }
 };
 var flixer_default = createScraper(flixerSite);
@@ -451,5 +462,5 @@ var shuttletvSite = {
 var shuttletv_default = createScraper(shuttletvSite);
 
 // src/index.mts
-var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default].map((scraper) => ({ ...scraper, version: "1.11.2" }));
+var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default].map((scraper) => ({ ...scraper, version: "1.11.3" }));
 var index_default = scrapers;
