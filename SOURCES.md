@@ -1,6 +1,6 @@
 # Source tracker
 
-Every source considered for this bundle, so the list can be worked through. Update it in the same commit whenever a source changes status. Statuses:
+Every source considered for this bundle, so the list can be worked through. The worked-out recipes for candidates are in [STRATEGIES.md](STRATEGIES.md) -- read the recipe before touching a candidate, don't redo the research. Update it in the same commit whenever a source changes status. Statuses:
 
 - **implemented** -- shipped in `src/index.mts`.
 - **candidate** -- verified by hand to give a playable HLS link (ffmpeg decode) with plain HTTP or a simple browser step; ready to build.
@@ -10,7 +10,7 @@ Every source considered for this bundle, so the list can be worked through. Upda
 
 Sources: the *Stream Aggregators*, *Dedicated-Server* and *Multi-Server* sections of <https://fmhy.net/video> (checked 2026-09-27), plus atlantic.st, nepu.io, ee3.me and pressplayz.to supplied directly. Triage was a single homepage fetch per site (status, Cloudflare/Turnstile markers, sign-in redirect) plus a scan of its JS bundles for the upstream players it references.
 
-Totals: implemented 7, candidate 1, possible 2, untriaged 104, rejected 37 (151 sites).
+Totals: implemented 7, candidate 3, possible 0, untriaged 104, rejected 37 (151 sites).
 
 ## Upstream players (where the leverage is)
 
@@ -19,13 +19,15 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | Upstream | Status | Notes |
 |---|---|---|
 | player.cinezo.live / proxy1.flikhub.net | implemented | Cinezo scraper. HTTP only. |
-| vixsrc.to | candidate | Pure HTTP, no browser. `GET /api/movie/{tmdb}` or `/api/tv/{tmdb}/{s}/{e}` returns `{src:"/embed/ID?token=…"}`; the embed page holds `window.masterPlaylist` (`url` + `params.token/expires`). Master URL = `url` + `&token=…&expires=…` (add `&h=1` for FHD). HLS master on vixsrc.to itself, needs `Referer: https://vixsrc.to/`; played in ffmpeg. Renditions seen 480p/720p (1080p not confirmed in the master head; check `canPlayFHD`/`h=1`), audio eng + ita, many subtitle tracks. Works for movie and TV, several titles. Backend of Streaming Unity. Note it is the StreamingCommunity/AnimeUnity catalogue: Italian-first, title coverage differs from the others. |
-| api.vidlove.cc (player.vidlove.cc, 111movies.net) | candidate | Pure HTTP, same API family as Cinezo: `GET https://api.vidlove.cc/{movie?id=TMDB | tv?id=TMDB&season=S&episode=E}&mode=json&sources=vidapi` with `Referer`/`Origin` `https://player.vidlove.cc`. Returns `source.url` (a master, `application/vnd.apple.mpegurl`) and an inline `source.manifest` with 640x266 / 1280x534 / 1920x800 variants; ffmpeg decodes it. Movie and TV worked on 4 titles. Other sources (`moviebox2`, `megaknight`, `warden`, `cinefreak`, `berlin`) returned null here. JSON has raw control characters: parse leniently. Segment host is `*.whysosigmabro.cfd` (rotating), so follow the playlist rather than assuming it. |
-| vidzee (player.vidzee.wtf / core.vidzee.wtf) | possible | Browser run reached an HLS master on `cdn1.ngcorp.dad`. The API `core.vidzee.wtf/streams/movie/{id}?s=dcloud&e=1` answered 502 to a plain curl; probably needs headers or a decrypt step. Same CDN as vidrock. |
-| vidrock.net | possible | `GET /api/movie/{id}` works over HTTP but the per-server `url` values are encrypted (base64url blob); the key/decrypt lives in the client JS. Ends at `cdn1.ngcorp.dad` HLS. |
-| vidnest.fun | possible | `new.vidnest.fun/yflix/movie/{id}` returns an encrypted `data` blob; browser run reached an HLS host (`pwcloud.animanga.fun`). Needs decrypt. |
-| vidlink.pro | possible | `/api/b/movie/{encrypted id}`; the id is produced client-side (WASM/obfuscated). Streams seen are MP4 files from `noon.mooncase.online` (moviebox CDN) -- would be `resolveKind: "file"`, and moviebox is DASH/MP4 elsewhere. |
-| videasy.net / videasy.to | untriaged | Browser run captured no stream in 24s (no click target found). Widely embedded (15+ sites) so worth a proper look. |
+| moviesapi.to / vidspark.to | candidate | Best find: real 1080p, static `x-player-key`, plain JSON API. Also the backend of PressPlay and vidnest `vidxyz`. See STRATEGIES.md. |
+| vixsrc.to | candidate | Pure HTTP; tokenised master from the embed page. Italian-first catalogue. Backend of Streaming Unity. See STRATEGIES.md. |
+| vidrock.net | candidate | Pure HTTP; AES-GCM with a key in the bundle; use servers Orion (1080p) and Luna, skip Atlas (dead segments). Needs Origin. See STRATEGIES.md. |
+| api.vidlove.cc (player.vidlove.cc, 111movies.net) | candidate | Pure HTTP, Cinezo-style API, `sources=vidapi`. See STRATEGIES.md. |
+| atlantic.st (stream.hls.lol) | candidate | Pure HTTP; AES-GCM key in the bundle; three servers. See STRATEGIES.md. |
+| new.vidnest.fun | candidate | Keyless custom-alphabet base64; routes per upstream. `nextgencloudfabric` and `allmovies` (Hindi) work; others broken or PNG-segment. See STRATEGIES.md. |
+| vidzee (player.vidzee.wtf / core.vidzee.wtf) | rejected | Redundant: its working output is vidrock's (Atlas CDN, whose segments are 403 "domain forbidden") and vidnest's MKV route. |
+| vidlink.pro | possible | Id minted by a Go WASM module (`fu.wasm` + libsodium); streams are moviebox MP4 files via `noon.mooncase.online`. Needs a BrowserSite and MP4/`file` support in `pickBestCapture`. Low priority. See STRATEGIES.md. |
+| videasy.net / videasy.to | untriaged | Direct embed captured nothing in 24s. Via vidnest it resolves to the nextgencloudfabric CDN with signed segments that answered 403; not worth more time. |
 | vidfast.pro / .vc | untriaged | No stream captured in 24s; heavy page. Widely embedded. |
 | vidup.to | untriaged | No stream captured in 24s. |
 | 2embed (2embed.skin) | untriaged | No stream captured in 24s. |
@@ -33,7 +35,7 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | vidking.net | rejected | Cloudflare challenge / no connection. |
 | vidsrc.to | rejected | Cloudflare challenge. |
 | vidcore.net / vidcore.io | rejected | 403 (checked earlier). |
-| cinesrc.st | implemented | This is ShuttleTV's backend (shuttletv scraper). |
+| cinesrc.st | implemented | ShuttleTV's backend (shuttletv scraper). |
 
 ## Implemented (7)
 
@@ -47,18 +49,18 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | [Movy](https://www.movy.sx/) | stream-aggregators | movy |
 | [ShuttleTV, 2, 3](https://shuttletv.su/) | stream-aggregators | shuttletv |
 
-## Candidates (verified, ready to build) (1)
+## Candidates (verified, ready to build) (3)
 
 | Site | Section | Note |
 |---|---|---|
-| [Streaming Unity](https://streamingunity.vip/) | dedicated-server | Front-end for **vixsrc.to** (see upstream table). |
+| [Atlantic](https://atlantic.st/) | dedicated-server | Own API `stream.hls.lol/helios` + AES-GCM key in the bundle; 3 servers, works for movie and TV. Recipe in STRATEGIES.md. |
+| [PressPlay](https://pressplayz.to/) | dedicated-server | Only iframes moviesapi.to / vidspark.to / vidfast.pro; build **moviesapi.to** (real 1080p) instead. Recipe in STRATEGIES.md. |
+| [Streaming Unity](https://streamingunity.vip/) | dedicated-server | Front-end for **vixsrc.to** (recipe in STRATEGIES.md). |
 
-## Possible (leads) (2)
+## Possible (leads) (0)
 
 | Site | Section | Note |
 |---|---|---|
-| [Atlantic](https://atlantic.st/) | dedicated-server | Own API: `cdn.hls.lol/content/{movie/tv}/…` (needs a header from a client-side helper) and `stream.hls.lol/helios?tmdbId=…` (AES-GCM payload, key ships in the bundle). No challenge seen. Worth a proper look. |
-| [PressPlay](https://pressplayz.to/) | dedicated-server | Astro site, no challenge on the homepage. Not investigated further. |
 
 ## Untriaged (104)
 

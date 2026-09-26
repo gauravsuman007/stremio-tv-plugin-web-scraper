@@ -22,7 +22,7 @@ Every change to a scraper's behaviour (or the shared code under `src/`) needs a 
 
 ## Keep SOURCES.md current
 
-[SOURCES.md](SOURCES.md) tracks every site considered (implemented / candidate / possible / untriaged / rejected) and the upstream players behind them. Before hunting for new sites, read it -- don't retry a rejected one. Update it in the same commit whenever a source changes status, and record the reason for a rejection.
+[SOURCES.md](SOURCES.md) tracks every site considered (implemented / candidate / possible / untriaged / rejected) and the upstream players behind them. Before hunting for new sites, read it -- don't retry a rejected one. Update it in the same commit whenever a source changes status, and record the reason for a rejection. [STRATEGIES.md](STRATEGIES.md) holds the worked-out request recipes (endpoints, keys, required headers, what was verified) for every candidate: **build from it, don't redo the research**, and add a recipe there whenever you solve a new source.
 
 ## Handling the streams these scrapers return
 
