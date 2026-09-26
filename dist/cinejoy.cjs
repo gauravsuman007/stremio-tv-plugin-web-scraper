@@ -17,12 +17,14 @@ var __copyProps = (to, from, except, desc) => {
 };
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-// src/scraper.mts
-var scraper_exports = {};
-__export(scraper_exports, {
-  default: () => scraper_default
+// src/index.mts
+var index_exports = {};
+__export(index_exports, {
+  default: () => index_default
 });
-module.exports = __toCommonJS(scraper_exports);
+module.exports = __toCommonJS(index_exports);
+
+// src/scraper.mts
 var import_playwright_core = require("playwright-core");
 var import_node_fs = require("node:fs");
 var BASE_URL = "https://cinejoy.pk";
@@ -306,3 +308,7 @@ var cinejoyScraper = {
   resolve
 };
 var scraper_default = cinejoyScraper;
+
+// src/index.mts
+var scrapers = [scraper_default];
+var index_default = scrapers;
