@@ -161,6 +161,16 @@ async function expandMasterPlaylist(fetchImpl, masterUrl, referrer) {
   variants.sort((a, b) => (b.bandwidth ?? 0) - (a.bandwidth ?? 0));
   return variants;
 }
+var MIN_PLAUSIBLE_DURATION_S = 300;
+async function leafDuration(fetchImpl, url, referrer) {
+  const response = await fetchImpl(url, { headers: { Referer: referrer } });
+  if (!response.ok) throw new Error(`playlist not fetchable: ${response.status}`);
+  const text = await response.text();
+  if (!text.includes("#EXT-X-ENDLIST") && !text.includes("#EXT-X-PLAYLIST-TYPE:VOD")) return null;
+  let total = 0;
+  for (const match of text.matchAll(/#EXTINF:([\d.]+)/g)) total += Number.parseFloat(match[1]);
+  return total;
+}
 function findChromiumExecutable() {
   const override = process.env.CHROMIUM_PATH;
   if (override && (0, import_node_fs.existsSync)(override)) return override;
@@ -257,6 +267,10 @@ async function pickBestCapture(site, captures, displayTitle, ctx) {
       }
       const top = variants[0];
       if (!top) continue;
+      if (!DIRECT_FILE_RE.test(top.url)) {
+        const duration = await leafDuration(ctx.fetch, top.url, site.referrer).catch(() => 0);
+        if (duration !== null && duration < MIN_PLAUSIBLE_DURATION_S) continue;
+      }
       const height = Math.max(...variants.map(variantHeight)) || heightFromUrl(mediaUrl);
       const score = height * 1e9 + Math.max(...variants.map((v) => v.bandwidth ?? 0));
       if (best && score <= best.score) continue;
@@ -437,5 +451,5 @@ var shuttletvSite = {
 var shuttletv_default = createScraper(shuttletvSite);
 
 // src/index.mts
-var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default].map((scraper) => ({ ...scraper, version: "1.11.0" }));
+var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default].map((scraper) => ({ ...scraper, version: "1.11.1" }));
 var index_default = scrapers;
