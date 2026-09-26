@@ -36,7 +36,8 @@ export type { ScraperContext };
 const TMDB_API_KEY = "8476a7ab80ad76f0936744df0430e67c";
 const TMDB_BASE = "https://api.themoviedb.org/3";
 
-const MASTER_PLAYLIST_RE = /\.m3u8(\?.*)?$/i;
+/** `.m3u8` at the end, before a query, or -- for a playlist wrapped in a relay's `?url=...&exp=...` -- before the next parameter. */
+const MASTER_PLAYLIST_RE = /\.m3u8(?:[?&#].*)?$/i;
 const DIRECT_FILE_RE = /\.(mp4|mkv|webm)(\?.*)?$/i;
 const SEGMENT_OR_INIT_RE = /(^|\/)(init|seg(ment)?[-_]?\d+|\d+)\.(mp4|m4s|webm)(\?.*)?$/i;
 const FILE_CANDIDATE_GRACE_MS = 4_000;

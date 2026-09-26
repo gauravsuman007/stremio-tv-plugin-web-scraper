@@ -17,7 +17,13 @@ const bcineySite: SiteAdapter = {
             match.mediaType === "movie"
                 ? `${base}/movie/${match.tmdbId}?autoplay=true`
                 : `${base}/tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}?autoplay=true`;
-        yield* autoplayCapture(page, url, ctx, { isPlaylist: /^https:\/\/v\.bciney\.to\/v\?url=/i });
+        /*
+            The player used to hand over the extension-less `v.bciney.to/v?url=`
+            master; it now plays a media playlist straight off its CDN
+            (`.../<hash>.mp4/index.m3u8`), which the old pattern alone
+            rejected -- every resolve returned null. Both are accepted.
+        */
+        yield* autoplayCapture(page, url, ctx, { isPlaylist: /^https:\/\/v\.bciney\.to\/v\?url=|\.m3u8(?:[?&#].*)?$/i });
     }
 };
 

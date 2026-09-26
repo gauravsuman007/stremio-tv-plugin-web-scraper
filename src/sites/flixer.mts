@@ -20,7 +20,12 @@ const flixerSite: SiteAdapter = {
             match.mediaType === "movie"
                 ? `${base}/movie/${match.tmdbId}`
                 : `${base}/tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
-        yield* autoplayCapture(page, url, ctx);
+        /*
+            Playlists are served as `serve.dragonballzfans.xyz/proxy?data=...`,
+            which has no `.m3u8` for the default matcher to find, so nothing
+            was ever captured. The first such request is the master.
+        */
+        yield* autoplayCapture(page, url, ctx, { isPlaylist: /^https:\/\/serve\.dragonballzfans\.xyz\/proxy\?data=/i });
     }
 };
 
