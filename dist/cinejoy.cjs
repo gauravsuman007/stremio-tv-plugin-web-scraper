@@ -81,7 +81,7 @@ function watchUrl(tmdbId, mediaType, season, episode) {
   if (mediaType === "movie") return `${BASE_URL}/watch/movie/${tmdbId}`;
   return `${BASE_URL}/watch/tv/${tmdbId}/${season ?? 1}/${episode ?? 1}`;
 }
-async function selectServerAndCapture(page, serverName, timeoutMs) {
+async function captureMediaUrl(page, timeoutMs, trigger) {
   let resolveMedia;
   const donePromise = new Promise((resolve2) => {
     resolveMedia = resolve2;
@@ -108,8 +108,7 @@ async function selectServerAndCapture(page, serverName, timeoutMs) {
   };
   page.on("request", onRequest);
   try {
-    await page.getByRole("button", { name: "Servers", exact: true }).click();
-    await page.getByText(serverName, { exact: true }).first().click({ timeout: 5e3 });
+    await trigger();
     return await Promise.race([
       donePromise,
       new Promise((resolve2) => setTimeout(() => resolve2(null), timeoutMs))
@@ -121,13 +120,19 @@ async function selectServerAndCapture(page, serverName, timeoutMs) {
     if (graceTimer) clearTimeout(graceTimer);
   }
 }
-async function expandMasterPlaylist(fetchImpl, masterUrl) {
+function selectServerAndCapture(page, serverName, timeoutMs) {
+  return captureMediaUrl(page, timeoutMs, async () => {
+    await page.getByRole("button", { name: "Servers", exact: true }).click();
+    await page.getByText(serverName, { exact: true }).first().click({ timeout: 5e3 });
+  });
+}
+async function expandMasterPlaylist(fetchImpl, masterUrl, referrer) {
   if (!MASTER_PLAYLIST_RE.test(masterUrl)) {
-    const response2 = await fetchImpl(masterUrl, { headers: { Referer: `${BASE_URL}/`, Range: "bytes=0-1023" } });
+    const response2 = await fetchImpl(masterUrl, { headers: { Referer: referrer, Range: "bytes=0-1023" } });
     if (!response2.ok) throw new Error(`direct file not fetchable: ${response2.status}`);
     return [{ resolution: null, bandwidth: null, url: masterUrl }];
   }
-  const response = await fetchImpl(masterUrl, { headers: { Referer: `${BASE_URL}/` } });
+  const response = await fetchImpl(masterUrl, { headers: { Referer: referrer } });
   if (!response.ok) throw new Error(`master playlist not fetchable: ${response.status}`);
   const text = await response.text();
   if (!text.startsWith("#EXTM3U")) throw new Error("not a valid HLS playlist");
@@ -166,6 +171,61 @@ async function resolveTmdbMatch(query, fetchImpl) {
   const matches = await tmdbSearch(fetchImpl, query.title);
   return matches.find((m) => m.mediaType === wantType) ?? matches[0] ?? null;
 }
+var PAGE_LOAD_CAPTURE_TIMEOUT_MS = 2e4;
+async function* autoplayCapture(page, url, ctx) {
+  const timeoutMs = Math.min(PAGE_LOAD_CAPTURE_TIMEOUT_MS, Math.max(8e3, ctx.budgetMs));
+  const mediaUrl = await captureMediaUrl(
+    page,
+    timeoutMs,
+    () => page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs })
+  );
+  if (mediaUrl) yield { mediaUrl };
+}
+var cinejoySite = {
+  id: "cinejoy",
+  name: "CineJoy",
+  referrer: `${BASE_URL}/`,
+  async available(ctx) {
+    return (await listServers(ctx.fetch)).some((s) => s.status === "ok");
+  },
+  async *captures(page, { match, season, episode }, ctx) {
+    const servers = (await listServers(ctx.fetch)).filter((s) => s.status === "ok").sort((a, b) => Number(b["4k"]) - Number(a["4k"]));
+    if (!servers.length) return;
+    const perServerTimeoutMs = Math.min(DEFAULT_PER_SERVER_TIMEOUT_MS, Math.max(5e3, ctx.budgetMs / servers.length));
+    await page.goto(watchUrl(match.tmdbId, match.mediaType, season, episode), {
+      waitUntil: "domcontentloaded",
+      timeout: perServerTimeoutMs
+    });
+    for (const server of servers) {
+      const mediaUrl = await selectServerAndCapture(page, server.name, perServerTimeoutMs);
+      if (mediaUrl) yield { mediaUrl, label: server.name };
+    }
+  }
+};
+var flixerSite = {
+  id: "flixer",
+  name: "Flixer",
+  referrer: "https://flixer.gd/",
+  async *captures(page, { match, season, episode }, ctx) {
+    const base = "https://flixer.gd/watch";
+    const url = match.mediaType === "movie" ? `${base}/movie/${match.tmdbId}` : `${base}/tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
+    yield* autoplayCapture(page, url, ctx);
+  }
+};
+var bcineySite = {
+  id: "bciney",
+  name: "bCine",
+  referrer: "https://player.bciney.to/",
+  async *captures(page, { match, season, episode }, ctx) {
+    const base = "https://player.bciney.to/embed";
+    const url = match.mediaType === "movie" ? `${base}/movie/${match.tmdbId}?autoplay=true` : `${base}/tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}?autoplay=true`;
+    yield* autoplayCapture(page, url, ctx);
+  }
+};
+var SITES = [cinejoySite, flixerSite, bcineySite];
+function siteFor(resolveId) {
+  return SITES.find((site) => site.id === resolveId) ?? cinejoySite;
+}
 async function search(query, ctx) {
   if (!findChromiumExecutable()) {
     console.warn("[cinejoy] no Chromium binary found (set CHROMIUM_PATH, or apk add chromium) -- skipping");
@@ -173,26 +233,25 @@ async function search(query, ctx) {
   }
   const match = await resolveTmdbMatch(query, ctx.fetch);
   if (!match) return [];
-  const servers = (await listServers(ctx.fetch)).filter((s) => s.status === "ok");
-  if (!servers.length) return [];
   const displayTitle = match.year ? `${match.title} (${match.year})` : match.title;
-  return [
-    {
-      url: "",
-      resolveId: "auto",
-      resolveKind: "hls",
-      title: `${displayTitle} \xB7 CineJoy`
-    }
-  ];
+  const placeholders = await Promise.all(
+    SITES.map(async (site) => {
+      if (site.available && !await site.available(ctx).catch(() => false)) return null;
+      return { url: "", resolveId: site.id, resolveKind: "hls", title: `${displayTitle} \xB7 ${site.name}` };
+    })
+  );
+  return placeholders.filter((link) => link !== null);
 }
-async function resolve(_resolveId, query, ctx) {
+function qualityScore(variant) {
+  const height = Number.parseInt(variant.resolution?.split("x")[1] ?? "0", 10) || 0;
+  return height * 1e9 + (variant.bandwidth ?? 0);
+}
+async function resolve(resolveId, query, ctx) {
   const executablePath = findChromiumExecutable();
   if (!executablePath) return null;
+  const site = siteFor(resolveId);
   const match = await resolveTmdbMatch(query, ctx.fetch);
   if (!match) return null;
-  const servers = (await listServers(ctx.fetch)).filter((s) => s.status === "ok").sort((a, b) => Number(b["4k"]) - Number(a["4k"]));
-  if (!servers.length) return null;
-  const perServerTimeoutMs = Math.min(DEFAULT_PER_SERVER_TIMEOUT_MS, Math.max(5e3, ctx.budgetMs / servers.length));
   const browser = await import_playwright_core.chromium.launch({
     headless: true,
     executablePath,
@@ -204,32 +263,36 @@ async function resolve(_resolveId, query, ctx) {
       userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
     });
     const page = await context.newPage();
-    await page.goto(watchUrl(match.tmdbId, match.mediaType, query.season, query.episode), {
-      waitUntil: "domcontentloaded",
-      timeout: perServerTimeoutMs
-    });
+    context.on("page", (popup) => void popup.close().catch(() => {
+    }));
     const displayTitle = match.year ? `${match.title} (${match.year})` : match.title;
-    for (const server of servers) {
-      const mediaUrl = await selectServerAndCapture(page, server.name, perServerTimeoutMs);
-      if (!mediaUrl) continue;
+    let best = null;
+    for await (const { mediaUrl, label } of site.captures(page, { match, season: query.season, episode: query.episode }, ctx)) {
       let variants;
       try {
-        variants = await expandMasterPlaylist(ctx.fetch, mediaUrl);
+        variants = await expandMasterPlaylist(ctx.fetch, mediaUrl, site.referrer);
       } catch {
         continue;
       }
-      const best = variants[0];
-      if (!best) continue;
+      const top = variants[0];
+      if (!top) continue;
+      const score = Math.max(...variants.map(qualityScore));
+      if (best && score <= best.score) continue;
       const resolutions = variants.map((v) => v.resolution).filter((r) => Boolean(r));
       const multi = MASTER_PLAYLIST_RE.test(mediaUrl) && variants.length > 1;
-      return {
-        url: multi ? mediaUrl : best.url,
-        resolveKind: "hls",
-        quality: resolutions.length ? `${resolutions.join("/")} \xB7 ${server.name}` : `CineJoy mirror: ${server.name}`,
-        title: displayTitle,
-        referrer: `${BASE_URL}/`
+      const mirror = label ? `${site.name} mirror: ${label}` : site.name;
+      best = {
+        score,
+        link: {
+          url: multi ? mediaUrl : top.url,
+          resolveKind: "hls",
+          quality: resolutions.length ? `${resolutions.join("/")} \xB7 ${label ?? site.name}` : mirror,
+          title: displayTitle,
+          referrer: site.referrer
+        }
       };
     }
+    if (best) return best.link;
     return null;
   } finally {
     await browser.close();
@@ -238,7 +301,7 @@ async function resolve(_resolveId, query, ctx) {
 var cinejoyScraper = {
   id: "cinejoy",
   name: "CineJoy",
-  version: "1.4.0",
+  version: "1.6.0",
   search,
   resolve
 };
