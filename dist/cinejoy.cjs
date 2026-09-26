@@ -310,5 +310,5 @@ var cinejoyScraper = {
 var scraper_default = cinejoyScraper;
 
 // src/index.mts
-var scrapers = [scraper_default];
+var scrapers = [scraper_default].map((scraper) => ({ ...scraper, version: "1.8.1" }));
 var index_default = scrapers;
