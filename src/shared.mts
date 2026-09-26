@@ -250,6 +250,25 @@ async function expandMasterPlaylist(
     return variants;
 }
 
+/** Shorter than any real film or episode: a playlist this short is a decoy or a stub. */
+const MIN_PLAUSIBLE_DURATION_S = 300;
+
+/**
+ * Total runtime of a leaf playlist in seconds, or null when it isn't a finished
+ * (VOD) playlist and so can't be judged. Some sites hand back a valid-looking
+ * playlist for a title they don't have -- a ~90s clip whose segments are
+ * really PNGs -- which passes a plain "is it HLS" check.
+ */
+async function leafDuration(fetchImpl: ScraperContext["fetch"], url: string, referrer: string): Promise<number | null> {
+    const response = await fetchImpl(url, { headers: { Referer: referrer } });
+    if (!response.ok) throw new Error(`playlist not fetchable: ${response.status}`);
+    const text = await response.text();
+    if (!text.includes("#EXT-X-ENDLIST") && !text.includes("#EXT-X-PLAYLIST-TYPE:VOD")) return null;
+    let total = 0;
+    for (const match of text.matchAll(/#EXTINF:([\d.]+)/g)) total += Number.parseFloat(match[1]!);
+    return total;
+}
+
 /** Alpine's `apk add chromium` package name, or an override for a
  *  differently-built host. See this repo's README for the Dockerfile side
  *  of this contract. */
@@ -443,6 +462,11 @@ async function pickBestCapture(
 
             const top = variants[0]; // sorted by bandwidth, highest first.
             if (!top) continue;
+
+            if (!DIRECT_FILE_RE.test(top.url)) {
+                const duration = await leafDuration(ctx.fetch, top.url, site.referrer).catch(() => 0);
+                if (duration !== null && duration < MIN_PLAUSIBLE_DURATION_S) continue; // a stub, not the title.
+            }
 
             const height = Math.max(...variants.map(variantHeight)) || heightFromUrl(mediaUrl);
             const score = height * 1e9 + Math.max(...variants.map((v) => v.bandwidth ?? 0));
