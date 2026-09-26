@@ -20,6 +20,10 @@ stremio-tv-plugin-web-links reads the compiled dist/ (e.g. `dist/streaming-sites
 
 Every change to a scraper's behaviour (or the shared code under `src/`) needs a `package.json` version bump in the same commit -- patch for fixes, minor for new scrapers or renames. All scrapers share that one version (`src/index.mts` stamps it), and stremio-tv's importer only installs a real increase, so an unbumped change never reaches anyone.
 
+## Keep SOURCES.md current
+
+[SOURCES.md](SOURCES.md) tracks every site considered (implemented / candidate / possible / untriaged / rejected) and the upstream players behind them. Before hunting for new sites, read it -- don't retry a rejected one. Update it in the same commit whenever a source changes status, and record the reason for a rejection.
+
 ## Handling the streams these scrapers return
 
 Read this if you are the app playing a returned `WebLink` (stremio-tv's web-links host, or anything else). Measured against real playback (ffmpeg decoding 8s of each link), not assumed.
