@@ -9,7 +9,7 @@ Every source considered for this bundle, so the list can be worked through. The 
 - **untriaged** -- reachable, no blocker seen, not yet examined. `embeds:` lists upstream players its bundles reference; if one of those becomes a scraper, this site is covered too.
 - **rejected** -- blocked (Cloudflare/Turnstile/captcha, sign-up, bot detection), dead, or DASH-only. Reasons are recorded so nobody retries them blindly. The rules in AGENTS.md still apply: challenges and bot detection are not bypassed.
 
-Sources: the *Stream Aggregators*, *Dedicated-Server*, *Multi-Server* and *P-Stream Forks* sections of <https://fmhy.net/video> (checked 2026-09-27), plus atlantic.st, nepu.io, ee3.me and pressplayz.to supplied directly. Triage was a single homepage fetch per site (status, Cloudflare/Turnstile markers, sign-in redirect) plus a scan of its JS bundles for the upstream players it references.
+Sources: the *Stream Aggregators*, *Dedicated-Server*, *Multi-Server* and *P-Stream Forks* sections of <https://fmhy.net/video> (checked 2026-09-27), plus atlantic.st, nepu.io, ee3.me and pressplayz.to supplied directly. Triage was a single homepage fetch per site (status, Cloudflare/Turnstile markers, sign-in redirect) plus a scan of its JS bundles for the upstream players it references. The p-stream GitHub org was also checked: its sources are in a DMCA-disabled repo and its hosted API is Turnstile-gated, so nothing came of it (STRATEGIES.md).
 
 Totals: implemented 9, candidate 1, blocked 0, possible 0, untriaged 104, rejected 49 (163 sites).
 

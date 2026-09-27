@@ -122,3 +122,15 @@ If ever needed: cheapest route is a `BrowserSite` that loads `https://vidlink.pr
 ## Duplicate content pools (why not all of these are worth shipping)
 
 Several sources are the same catalogue behind different fronts. Identical encode (640x266 / 1280x534 / 1920x800 for Inception, 8888 s) appears on atlantic (peraspera), vidnest `nextgencloudfabric`, vidlove `vidapi`, vidrock `Luna`, and vidnest `videasy`. Distinct pools worth having: **moviesapi.to** (`netrocdn`, real 1080p), **vidrock Orion** (1080/720/360), **vixsrc** (Italian catalogue), **allmovies** (Hindi dub). Suggested build order: moviesapi, vixsrc, vidrock, then one of the shared-pool fronts (vidlove is the simplest), then atlantic/vidnest if more coverage is wanted.
+
+---
+
+## github.com/p-stream (researched 2026-09-27; status: nothing to build)
+
+Every source P-Stream uses lives in `p-stream/providers`, which is **disabled on GitHub (DMCA)**; the front-end (`p-stream/p-stream`) only imports it (`@p-stream/providers` from `github:p-stream/providers#production`) and adds hls.js. Do not look for mirrors or forks of it. The remaining public repos hold no scraping logic:
+
+- `providers-api`: a Cloudflare Worker wrapping the (blocked) package as `GET /scrape?type=&title=&releaseYear=&tmdbId=&target=`. Every call needs a `token` that is a Cloudflare Turnstile solution (or a JWT minted from one, bound to the caller's IP), so it can't be used without solving the challenge. Rejected.
+- `userscript` / the browser extension: only inject request headers so the browser can fetch cross-origin (nothing to extract).
+- `backend`, `docs`, `assets`, `theintrodb-install-guide`: accounts/sync, documentation, artwork, skip-intro data.
+
+The P-Stream forks listed on fmhy stay rejected (front-ends of the same library). Useful sources they surface are found by the players they embed, which are already covered in the tables above.
