@@ -760,6 +760,24 @@ var lookmovieSite = {
 };
 var lookmovie_default = createScraper(lookmovieSite);
 
+// src/sites/aetherlul.mts
+var API5 = "https://lul.aether.cx/";
+var API_TIMEOUT_MS10 = 2e4;
+var aetherlulSite = {
+  id: "aetherlul",
+  name: "Aether",
+  referrer: API5,
+  maxQuality: "1080p",
+  async *httpCaptures({ match, season, episode }, ctx) {
+    const path = match.mediaType === "movie" ? `movie/${match.tmdbId}` : `tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
+    const response = await ctx.fetch(`${API5}${path}`, { signal: AbortSignal.timeout(API_TIMEOUT_MS10) });
+    if (!response.ok) return;
+    const body = await response.json();
+    if (body.stream) yield { mediaUrl: body.stream, label: "Aether" };
+  }
+};
+var aetherlul_default = createScraper(aetherlulSite);
+
 // src/sites/shuttletv.mts
 var shuttletvSite = {
   id: "shuttletv",
@@ -775,5 +793,5 @@ var shuttletvSite = {
 var shuttletv_default = createScraper(shuttletvSite);
 
 // src/index.mts
-var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default].map((scraper) => ({ ...scraper, version: "1.15.0" }));
+var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default].map((scraper) => ({ ...scraper, version: "1.16.0" }));
 var index_default = scrapers;
