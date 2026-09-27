@@ -554,6 +554,73 @@ var vixsrcSite = {
 };
 var vixsrc_default = createScraper(vixsrcSite);
 
+// src/sites/atlantic.mts
+var import_node_crypto2 = require("node:crypto");
+var SITE4 = "https://atlantic.st/";
+var API = "https://stream.hls.lol/helios";
+var KEY_HEX2 = "e4b8a1d6f2c9037b5a8e4d1c6f9b2085a7c3e9f6d1b4a8c2e5f7a0d3b6c9e2f5";
+var PREFIX = "ns_";
+var API_TIMEOUT_MS5 = 2e4;
+var IV_BYTES2 = 12;
+var aesKey2;
+async function decrypt2(value) {
+  if (!value.startsWith(PREFIX)) return value;
+  aesKey2 ??= import_node_crypto2.webcrypto.subtle.importKey("raw", Buffer.from(KEY_HEX2, "hex"), "AES-GCM", false, ["decrypt"]);
+  const bytes = Buffer.from(value.slice(PREFIX.length), "hex");
+  const plain = await import_node_crypto2.webcrypto.subtle.decrypt({ name: "AES-GCM", iv: bytes.subarray(0, IV_BYTES2) }, await aesKey2, bytes.subarray(IV_BYTES2));
+  return Buffer.from(plain).toString("utf8");
+}
+var atlanticSite = {
+  id: "atlantic",
+  name: "Atlantic",
+  referrer: SITE4,
+  headers: { Origin: SITE4.slice(0, -1) },
+  maxQuality: "1080p",
+  async *httpCaptures({ match, season, episode }, ctx) {
+    const query = match.mediaType === "movie" ? `tmdbId=${match.tmdbId}&type=movie` : `tmdbId=${match.tmdbId}&type=tv&seasonId=${season ?? 1}&episodeId=${episode ?? 1}`;
+    const response = await ctx.fetch(`${API}?${query}`, { headers: { Referer: SITE4, Origin: SITE4.slice(0, -1) }, signal: AbortSignal.timeout(API_TIMEOUT_MS5) });
+    if (!response.ok) return;
+    const body = await response.json();
+    for (const [name, entry] of Object.entries(body.sources ?? {})) {
+      if (!entry?.url || entry.type && entry.type !== "hls") continue;
+      try {
+        yield { mediaUrl: await decrypt2(entry.url), label: name };
+      } catch {
+        continue;
+      }
+    }
+  }
+};
+var atlantic_default = createScraper(atlanticSite);
+
+// src/sites/vidlove.mts
+var PLAYER2 = "https://player.vidlove.cc/";
+var API2 = "https://api.vidlove.cc/";
+var API_TIMEOUT_MS6 = 2e4;
+var vidloveSite = {
+  id: "vidlove",
+  name: "Vidlove",
+  referrer: PLAYER2,
+  maxQuality: "1080p",
+  async *httpCaptures({ match, season, episode }, ctx) {
+    const path = match.mediaType === "movie" ? `movie?id=${match.tmdbId}` : `tv?id=${match.tmdbId}&season=${season ?? 1}&episode=${episode ?? 1}`;
+    const response = await ctx.fetch(`${API2}${path}&mode=json&sources=vidapi`, {
+      headers: { Referer: PLAYER2, Origin: PLAYER2.slice(0, -1) },
+      signal: AbortSignal.timeout(API_TIMEOUT_MS6)
+    });
+    if (!response.ok) return;
+    const text = (await response.text()).replace(/[\u0000-\u001f]/g, " ");
+    let body;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      return;
+    }
+    if (body.source?.url) yield { mediaUrl: body.source.url, label: "VidAPI" };
+  }
+};
+var vidlove_default = createScraper(vidloveSite);
+
 // src/sites/shuttletv.mts
 var shuttletvSite = {
   id: "shuttletv",
@@ -569,5 +636,5 @@ var shuttletvSite = {
 var shuttletv_default = createScraper(shuttletvSite);
 
 // src/index.mts
-var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default].map((scraper) => ({ ...scraper, version: "1.13.0" }));
+var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default].map((scraper) => ({ ...scraper, version: "1.14.0" }));
 var index_default = scrapers;
