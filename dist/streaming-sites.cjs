@@ -131,13 +131,16 @@ async function captureMediaUrl(page, timeoutMs, trigger, options = {}) {
     if (graceTimer) clearTimeout(graceTimer);
   }
 }
-async function expandMasterPlaylist(fetchImpl, masterUrl, referrer) {
+function mediaHeaders(site) {
+  return { Referer: site.referrer, ...site.headers };
+}
+async function expandMasterPlaylist(fetchImpl, masterUrl, headers) {
   if (DIRECT_FILE_RE.test(masterUrl)) {
-    const response2 = await fetchImpl(masterUrl, { headers: { Referer: referrer, Range: "bytes=0-1023" } });
+    const response2 = await fetchImpl(masterUrl, { headers: { ...headers, Range: "bytes=0-1023" } });
     if (!response2.ok) throw new Error(`direct file not fetchable: ${response2.status}`);
     return [{ resolution: null, bandwidth: null, url: masterUrl }];
   }
-  const response = await fetchImpl(masterUrl, { headers: { Referer: referrer } });
+  const response = await fetchImpl(masterUrl, { headers });
   if (!response.ok) throw new Error(`master playlist not fetchable: ${response.status}`);
   const text = await response.text();
   if (!text.startsWith("#EXTM3U")) throw new Error("not a valid HLS playlist");
@@ -162,8 +165,8 @@ async function expandMasterPlaylist(fetchImpl, masterUrl, referrer) {
   return variants;
 }
 var MIN_PLAUSIBLE_DURATION_S = 300;
-async function leafDuration(fetchImpl, url, referrer) {
-  const response = await fetchImpl(url, { headers: { Referer: referrer } });
+async function leafDuration(fetchImpl, url, headers) {
+  const response = await fetchImpl(url, { headers });
   if (!response.ok) throw new Error(`playlist not fetchable: ${response.status}`);
   const text = await response.text();
   if (!text.includes("#EXT-X-ENDLIST") && !text.includes("#EXT-X-PLAYLIST-TYPE:VOD")) return null;
@@ -261,14 +264,14 @@ async function pickBestCapture(site, captures, displayTitle, ctx) {
       const { mediaUrl, label } = step.value;
       let variants;
       try {
-        variants = await expandMasterPlaylist(ctx.fetch, mediaUrl, site.referrer);
+        variants = await expandMasterPlaylist(ctx.fetch, mediaUrl, mediaHeaders(site));
       } catch {
         continue;
       }
       const top = variants[0];
       if (!top) continue;
       if (!DIRECT_FILE_RE.test(top.url)) {
-        const duration = await leafDuration(ctx.fetch, top.url, site.referrer).catch(() => 0);
+        const duration = await leafDuration(ctx.fetch, top.url, mediaHeaders(site)).catch(() => 0);
         if (duration !== null && duration < MIN_PLAUSIBLE_DURATION_S) continue;
       }
       const height = Math.max(...variants.map(variantHeight)) || heightFromUrl(mediaUrl);
@@ -285,7 +288,8 @@ async function pickBestCapture(site, captures, displayTitle, ctx) {
           resolveKind: "hls",
           quality: resolutions.length ? `${resolutions.join("/")} \xB7 ${label ?? site.name}` : height ? `${height}p \xB7 ${label ?? site.name}` : mirror,
           title: displayTitle,
-          referrer: site.referrer
+          referrer: site.referrer,
+          ...site.headers ? { headers: site.headers } : {}
         }
       };
       if (best.height >= BEST_POSSIBLE_HEIGHT) break;
@@ -472,6 +476,84 @@ var moviesapiSite = {
 };
 var moviesapi_default = createScraper(moviesapiSite);
 
+// src/sites/vidrock.mts
+var import_node_crypto = require("node:crypto");
+var SITE2 = "https://vidrock.net/";
+var KEY_HEX = "7f3e9c2a8b5d1f4e6a9c3b7d2e5f8a1c4b6d9e2f5a8c1b4d7e9f2a5c8b1d4e7f";
+var SERVERS = ["Orion", "Luna"];
+var API_TIMEOUT_MS3 = 2e4;
+var IV_BYTES = 12;
+var aesKey;
+function importKey() {
+  aesKey ??= import_node_crypto.webcrypto.subtle.importKey("raw", Buffer.from(KEY_HEX, "hex"), "AES-GCM", false, ["decrypt"]);
+  return aesKey;
+}
+async function decrypt(blob) {
+  const bytes = Buffer.from(blob.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+  const plain = await import_node_crypto.webcrypto.subtle.decrypt({ name: "AES-GCM", iv: bytes.subarray(0, IV_BYTES) }, await importKey(), bytes.subarray(IV_BYTES));
+  return Buffer.from(plain).toString("utf8");
+}
+var vidrockSite = {
+  id: "vidrock",
+  name: "Vidrock",
+  referrer: SITE2,
+  headers: { Origin: SITE2.slice(0, -1) },
+  maxQuality: "1080p",
+  async *httpCaptures({ match, season, episode }, ctx) {
+    const path = match.mediaType === "movie" ? `movie/${match.tmdbId}` : `tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
+    const response = await ctx.fetch(`${SITE2}api/${path}`, { headers: { Referer: SITE2 }, signal: AbortSignal.timeout(API_TIMEOUT_MS3) });
+    if (!response.ok) return;
+    const servers = await response.json();
+    for (const name of SERVERS) {
+      const entry = servers[name];
+      if (!entry?.url || entry.type !== "hls") continue;
+      let mediaUrl;
+      try {
+        mediaUrl = entry.url.startsWith("http") ? entry.url : await decrypt(entry.url);
+      } catch {
+        continue;
+      }
+      yield { mediaUrl, label: name };
+    }
+  }
+};
+var vidrock_default = createScraper(vidrockSite);
+
+// src/sites/vixsrc.mts
+var SITE3 = "https://vixsrc.to/";
+var API_TIMEOUT_MS4 = 2e4;
+var vixsrcSite = {
+  id: "vixsrc",
+  name: "VixSrc",
+  referrer: SITE3,
+  maxQuality: "720p",
+  async *httpCaptures({ match, season, episode }, ctx) {
+    const path = match.mediaType === "movie" ? `movie/${match.tmdbId}` : `tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
+    const signal = AbortSignal.timeout(API_TIMEOUT_MS4);
+    const api = await ctx.fetch(`${SITE3}api/${path}`, { headers: { Referer: SITE3 }, signal });
+    if (!api.ok) return;
+    const { src } = await api.json();
+    if (!src) return;
+    const page = await ctx.fetch(new URL(src, SITE3).toString(), { headers: { Referer: `${SITE3}${path}` }, signal });
+    if (!page.ok) return;
+    const html = await page.text();
+    const start = html.indexOf("window.masterPlaylist");
+    if (start < 0) return;
+    const block = html.slice(start, start + 800);
+    const url = /url:\s*'([^']+)'/.exec(block)?.[1];
+    const token = /'token':\s*'([^']+)'/.exec(block)?.[1];
+    const expires = /'expires':\s*'([^']+)'/.exec(block)?.[1];
+    if (!url || !token || !expires) return;
+    const master = new URL(url);
+    master.searchParams.set("token", token);
+    master.searchParams.set("expires", expires);
+    master.searchParams.set("h", "1");
+    master.searchParams.set("lang", "en");
+    yield { mediaUrl: master.toString() };
+  }
+};
+var vixsrc_default = createScraper(vixsrcSite);
+
 // src/sites/shuttletv.mts
 var shuttletvSite = {
   id: "shuttletv",
@@ -487,5 +569,5 @@ var shuttletvSite = {
 var shuttletv_default = createScraper(shuttletvSite);
 
 // src/index.mts
-var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default].map((scraper) => ({ ...scraper, version: "1.12.0" }));
+var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default].map((scraper) => ({ ...scraper, version: "1.13.0" }));
 var index_default = scrapers;
