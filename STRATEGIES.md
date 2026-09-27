@@ -84,7 +84,7 @@ Checked movie 27205 (640x266/1280x534/1920x800, 8888 s) and TV 1399 S1E1 (640x36
 
 ---
 
-## new.vidnest.fun  (status: candidate) -- one backend, many upstreams
+## new.vidnest.fun  (status: implemented in 1.15.0 -- `src/sites/vidnest.mts`, `nextgencloudfabric` only) -- one backend, many upstreams
 
 Pure HTTP, **no key**. `GET https://new.vidnest.fun/{upstream}/movie/{tmdb}` or `/{upstream}/tv/{tmdb}/{season}/{episode}` with `Referer: https://vidnest.fun/`, `Origin: https://vidnest.fun`. Responses are `{encrypted:true, data:"..."}` where `data` is base64 in a **custom alphabet** `RB0fpH8ZEyVLkv7c2i6MAJ5u3IKFDxlS1NTsnGaqmXYdUrtzjwObCgQP94hoeW+/=` (standard base64 decoding with that alphabet substituted, then UTF-8 -> JSON). The decode is 10 lines (see `decryptCipherResponse` in `_next/static/chunks/*47fb*.js`); an unencrypted response is plain JSON.
 
@@ -125,12 +125,19 @@ Several sources are the same catalogue behind different fronts. Identical encode
 
 ---
 
-## github.com/p-stream (researched 2026-09-27; status: nothing to build)
+## github.com/p-stream (researched 2026-09-27)
 
-Every source P-Stream uses lives in `p-stream/providers`, which is **disabled on GitHub (DMCA)**; the front-end (`p-stream/p-stream`) only imports it (`@p-stream/providers` from `github:p-stream/providers#production`) and adds hls.js. Do not look for mirrors or forks of it. The remaining public repos hold no scraping logic:
+**Source code: nothing.** Every source P-Stream uses lives in `p-stream/providers`, which is disabled on GitHub (DMCA); the front-end only imports it. Do not look for mirrors or forks of it, and do not pull its code out of a fork's bundle. `providers-api` (a Worker wrapping the package) needs a Cloudflare Turnstile token per call. The userscript/extension only inject headers.
 
-- `providers-api`: a Cloudflare Worker wrapping the (blocked) package as `GET /scrape?type=&title=&releaseYear=&tmdbId=&target=`. Every call needs a `token` that is a Cloudflare Turnstile solution (or a JWT minted from one, bound to the caller's IP), so it can't be used without solving the challenge. Rejected.
-- `userscript` / the browser extension: only inject request headers so the browser can fetch cross-origin (nothing to extract).
-- `backend`, `docs`, `assets`, `theintrodb-install-guide`: accounts/sync, documentation, artwork, skip-intro data.
+**Black-box method that did work.** Open a fork (pstream.cfd) on `/media/tmdb-movie-27205-inception`, let it run its source search, then read `performance.getEntriesByType('resource')` in the page: the app sends every upstream request through its own relays (`eve.pstream.cfd/?destination=<url>`, `ava.pstream.cfd`), and many destinations are plain (URL-encoded) so the upstream APIs and their parameters are visible. Some destinations are hex-obfuscated; ignore those. This is ordinary observation of a public site, the same as watching any player. Then probe the upstream APIs directly from Node. (Its sources have random names in the UI: Lola, Elsie, ...)
 
-The P-Stream forks listed on fmhy stay rejected (front-ends of the same library). Useful sources they surface are found by the players they embed, which are already covered in the tables above.
+Upstreams seen for Inception, and what came of each:
+
+| Upstream | Result |
+|---|---|
+| `scrapper.rivestream.app/api/provider?provider=vanguard&id=TMDB[&season=&episode=]` | **Built** as `rivestream` (1.15.0). Plain JSON, no key, no headers needed for the API. `data.sources[0].url` is `proxy.valhallastream.com/m3u8-proxy?url=<real>&headers=<json>`; unwrap it: the real URL is a cinejoy-CDN master (`lit.cheaptruckrepairs.cc/playlist/...`, 3840x2160 HEVC / 1080 / 720 / 360) and the headers are `Referer: https://cinejoy.pk/`, `Origin: https://cinejoy.pk` (needs web-links >= 0.9.0). 8/10 titles (Casablanca, The Last of Us null), under 1 s. Same pool as cinejoy but no browser. `provider=pulse` and `apex` returned `{data:null}`. |
+| `www.lookmovie2.to` | **Built** as `lookmovie` (1.15.0). (1) `GET /api/v1/{movies\|shows}/do-search/?q=TITLE` -> `result[]{slug,title,year}`. (2) `GET /{movies\|shows}/play/SLUG`: inline `hash: "..."`, `expires: N`, `id_movie: N` (movies) or `window.seasons='{...}'` (shows; a JS single-quoted string, unescape `\'`, `\"`, `\\`, then JSON; `seasons[S].episodes[E].id_episode`). (3) `GET /api/v1/security/movie-access?id_movie=&hash=&expires=` or `episode-access?id_episode=...` -> `streams` (`{"480p"\|"480":url\|null,...}`), single-rendition HLS. No Referer needed, no Cloudflare on the API. Mostly 480p only; some titles `/aes/` (AES-128, relayed fine). 9/10 titles (The Godfather not in the catalogue). Homepage mentions Turnstile but the API path never hit it. |
+| `api.speedracelight.com/{hdmovie,cdn,lamovie,meine}/sources-with-title?title=&mediaType=&year=&tmdbId=&imdbId=&enc=2&seed=` (seed from `/seed?mediaId=TMDB`, 30 s TTL) | Not built. `hdmovie`/`cdn` return an encrypted blob whose scheme is not visible from outside (it lives in the blocked library); `lamovie`/`meine` 500. Left as `possible`. |
+| `proxy.valhallastream.com/m3u8-proxy` | Rivestream's proxy; unwrapped, not used. |
+
+The forks also call `sub.wyzie.io`, `sub.vdrk.site` (subtitles), `api.theintrodb.org`, `api.skipdb.tv`, `v3-cinemeta.strem.io`: metadata, not streams. Repeat the method on another fork or another title to find more upstreams (the source list changes per media type, so try a TV episode too).

@@ -9,9 +9,9 @@ Every source considered for this bundle, so the list can be worked through. The 
 - **untriaged** -- reachable, no blocker seen, not yet examined. `embeds:` lists upstream players its bundles reference; if one of those becomes a scraper, this site is covered too.
 - **rejected** -- blocked (Cloudflare/Turnstile/captcha, sign-up, bot detection), dead, or DASH-only. Reasons are recorded so nobody retries them blindly. The rules in AGENTS.md still apply: challenges and bot detection are not bypassed.
 
-Sources: the *Stream Aggregators*, *Dedicated-Server*, *Multi-Server* and *P-Stream Forks* sections of <https://fmhy.net/video> (checked 2026-09-27), plus atlantic.st, nepu.io, ee3.me and pressplayz.to supplied directly. Triage was a single homepage fetch per site (status, Cloudflare/Turnstile markers, sign-in redirect) plus a scan of its JS bundles for the upstream players it references. The p-stream GitHub org was also checked: its sources are in a DMCA-disabled repo and its hosted API is Turnstile-gated, so nothing came of it (STRATEGIES.md).
+Sources: the *Stream Aggregators*, *Dedicated-Server*, *Multi-Server* and *P-Stream Forks* sections of <https://fmhy.net/video> (checked 2026-09-27), plus atlantic.st, nepu.io, ee3.me and pressplayz.to supplied directly. Triage was a single homepage fetch per site (status, Cloudflare/Turnstile markers, sign-in redirect) plus a scan of its JS bundles for the upstream players it references. The p-stream GitHub org has no usable code (DMCA-disabled library, Turnstile-gated API), so P-Stream was studied black-box instead: which upstream APIs a live fork calls (STRATEGIES.md).
 
-Totals: implemented 9, candidate 1, blocked 0, possible 0, untriaged 104, rejected 49 (163 sites).
+Totals: implemented 12, candidate 0, blocked 0, possible 0, untriaged 103, rejected 48 (163 sites).
 
 ## Upstream players (where the leverage is)
 
@@ -25,7 +25,10 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | vidrock.net | implemented | Shipped in 1.13.0 (Orion + Luna; sends Origin via WebLink.headers, needs web-links >= 0.9.0). Pure HTTP; AES-GCM with a key in the bundle; use servers Orion (1080p) and Luna, skip Atlas (dead segments). Needs Origin. See STRATEGIES.md. |
 | api.vidlove.cc (player.vidlove.cc, 111movies.net) | implemented | Shipped in 1.14.0 (`vidlove`). Pure HTTP, `sources=vidapi`; Referer alone plays. Same content pool as Atlantic/vidrock Luna. See STRATEGIES.md. |
 | atlantic.st (stream.hls.lol) | implemented | Shipped in 1.14.0 (`atlantic`; needs web-links >= 0.9.0 for Origin). Pure HTTP; AES-GCM key in the bundle; three servers. See STRATEGIES.md. |
-| new.vidnest.fun | candidate | Keyless custom-alphabet base64; routes per upstream. `nextgencloudfabric` and `allmovies` (Hindi) work; others broken or PNG-segment. See STRATEGIES.md. |
+| new.vidnest.fun | implemented | Shipped in 1.15.0 (`vidnest`, upstream `nextgencloudfabric` only). Keyless custom-alphabet base64. `allmovies` (Hindi dub) is not built: it returned Cloudflare 502 for every title on 2026-09-27. Others broken or PNG-segment. See STRATEGIES.md. |
+| scrapper.rivestream.app | implemented | Shipped in 1.15.0 (`rivestream`, provider `vanguard` = 4K HDR cinejoy CDN, plain JSON). Found by watching P-Stream. `pulse`/`apex` returned null. See STRATEGIES.md. |
+| www.lookmovie2.to | implemented | Shipped in 1.15.0 (`lookmovie`). Search -> play page (hash, expires) -> access API; mostly 480p; TV works. Found by watching P-Stream. See STRATEGIES.md. |
+| api.speedracelight.com | possible | Used by P-Stream (`{hdmovie,cdn,lamovie,meine}/sources-with-title?...&enc=2&seed=` after `/seed?mediaId=`). Returns an encrypted blob; the decryption scheme is not visible from outside and lives in the blocked library, so not pursued. `lamovie`/`meine` 500. |
 | vidzee (player.vidzee.wtf / core.vidzee.wtf) | rejected | Redundant: its working output is vidrock's (Atlas CDN, whose segments are 403 "domain forbidden") and vidnest's MKV route. |
 | vidlink.pro | possible | Id minted by a Go WASM module (`fu.wasm` + libsodium); streams are moviebox MP4 files via `noon.mooncase.online`. Needs a BrowserSite and MP4/`file` support in `pickBestCapture`. Low priority. See STRATEGIES.md. |
 | videasy.net / videasy.to | untriaged | Direct embed captured nothing in 24s. Via vidnest it resolves to the nextgencloudfabric CDN with signed segments that answered 403; not worth more time. |
@@ -38,10 +41,12 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | vidcore.net / vidcore.io | rejected | 403 (checked earlier). |
 | cinesrc.st | implemented | ShuttleTV's backend (shuttletv scraper). |
 
-## Implemented (9)
+## Implemented (12)
 
 | Site | Section | Note |
 |---|---|---|
+| [Atlantic](https://atlantic.st/) | dedicated-server | atlantic (Atlantic) -- 1.14.0 |
+| [LookMovie, 2](https://lookmovie2.to/) | dedicated-server | lookmovie (LookMovie) -- 1.15.0; plain HTTP, mostly 480p |
 | [PressPlay](https://pressplayz.to/) | dedicated-server | covered by MoviesAPI: it only iframes moviesapi.to / vidspark.to / vidfast.pro |
 | [Streaming Unity](https://streamingunity.vip/) | dedicated-server | covered by VixSrc (its front-end) |
 | [7Movies](https://7movies.ac/) | stream-aggregators | sevenMovies |
@@ -50,13 +55,13 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | [Cinejoy](https://cinejoy.pk/) | stream-aggregators | cinejoy |
 | [Flixer, 2, 3 or Hexa](https://flixer.gd) | stream-aggregators | flixer |
 | [Movy](https://www.movy.sx/) | stream-aggregators | movy |
+| [Rive, 2, 3 or CorsFlix, 2, 3](https://www.rivestream.app/) | stream-aggregators | rivestream (Rivestream) -- 1.15.0; its scraper API is plain JSON (the Turnstile is only on the site UI) |
 | [ShuttleTV, 2, 3](https://shuttletv.su/) | stream-aggregators | shuttletv |
 
-## Candidates (verified, ready to build) (1)
+## Candidates (verified, ready to build) (0)
 
 | Site | Section | Note |
 |---|---|---|
-| [Atlantic](https://atlantic.st/) | dedicated-server | Own API `stream.hls.lol/helios` + AES-GCM key in the bundle; 3 servers, works for movie and TV. Recipe in STRATEGIES.md. |
 
 ## Blocked (works, but the host cannot play it yet) (0)
 
@@ -68,7 +73,7 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | Site | Section | Note |
 |---|---|---|
 
-## Untriaged (104)
+## Untriaged (103)
 
 | Site | Section | Note |
 |---|---|---|
@@ -79,7 +84,6 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | [Filmo](https://filmo.to/) | dedicated-server | no known upstream seen in its bundles; needs its own look |
 | [FshareTV](https://fsharetv.co/) | dedicated-server | no known upstream seen in its bundles; needs its own look |
 | [Levidia, 2, 3](https://www.levidia.ch/) | dedicated-server | no known upstream seen in its bundles; needs its own look |
-| [LookMovie, 2](https://lookmovie2.to/) | dedicated-server | homepage mentions Turnstile/captcha; may only gate the site UI, not the embed. Low priority |
 | [MovieBox, 2, 3, 4, 5](https://movieboxonline.net) | dedicated-server | no known upstream seen in its bundles; needs its own look |
 | [MovieNestBD](https://movienestbd.best/) | dedicated-server | no known upstream seen in its bundles; needs its own look |
 | [PrimeWire, 2, 3](https://www.primewire.mov/) | dedicated-server | no known upstream seen in its bundles; needs its own look |
@@ -177,7 +181,7 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | [Watchott or EmnexMovies](https://watchott.org/) | stream-aggregators | no known upstream seen in its bundles; needs its own look |
 | [Willow](https://willow.arlen.icu/) | stream-aggregators | no known upstream seen in its bundles; needs its own look |
 
-## Rejected (49)
+## Rejected (48)
 
 | Site | Section | Note |
 |---|---|---|
@@ -221,7 +225,6 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | [NOVA](https://novahd.cc/) | stream-aggregators | Cloudflare challenge / 403 on the homepage (fetch test) |
 | [PopcornMovies or BingeBox](https://popcornmovies.ac/) | stream-aggregators | Cloudflare challenge |
 | [Reelix or Coreflix](https://reelix.ac/) | stream-aggregators | vidcore backend answers 403 |
-| [Rive, 2, 3 or CorsFlix, 2, 3](https://www.rivestream.app/) | stream-aggregators | Turnstile challenge |
 | [Spacedom](https://spacedom.live/) | stream-aggregators | Cloudflare challenge / 403 on the homepage (fetch test) |
 | [SpenFlix](https://watch.spencerdevs.xyz/) | stream-aggregators | CDN 403s non-browser TLS |
 | [Stellar](https://stellar.gdn/) | stream-aggregators | Turnstile |

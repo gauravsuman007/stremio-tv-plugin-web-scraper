@@ -1,6 +1,6 @@
 {
     "name": "stremio-tv-plugin-web-scraper",
-    "version": "1.14.1",
+    "version": "1.15.0",
     "description": "Web-link scrapers for several streaming sites: search by title, resolve the best-quality stream",
     "private": true,
     "type": "module",
