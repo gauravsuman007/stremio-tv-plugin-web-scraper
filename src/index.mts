@@ -21,12 +21,15 @@ import rivestreamScraper from "./sites/rivestream.mts";
 import lookmovieScraper from "./sites/lookmovie.mts";
 import aetherlulScraper from "./sites/aetherlul.mts";
 import shuttletvScraper from "./sites/shuttletv.mts";
+import xpassScraper from "./sites/xpass.mts";
+import arc018Scraper from "./sites/arc018.mts";
+import filmoScraper from "./sites/filmo.mts";
 
 /** Replaced at build time (esbuild `--define`) with package.json's version,
  *  the one place it is written -- a version typed into a scraper's own source
  *  drifts from the manifest and the plugins page then shows a stale one. */
 declare const __PACKAGE_VERSION__: string;
 
-const scrapers: WebLinkScraper[] = [cinejoyScraper, flixerScraper, bcineyScraper, movyScraper, shuttletvScraper, sevenMoviesScraper, cinezoScraper, moviesapiScraper, vidrockScraper, vixsrcScraper, atlanticScraper, vidloveScraper, vidnestScraper, rivestreamScraper, lookmovieScraper, aetherlulScraper].map((scraper) => ({ ...scraper, version: __PACKAGE_VERSION__ }));
+const scrapers: WebLinkScraper[] = [cinejoyScraper, flixerScraper, bcineyScraper, movyScraper, shuttletvScraper, sevenMoviesScraper, cinezoScraper, moviesapiScraper, vidrockScraper, vixsrcScraper, atlanticScraper, vidloveScraper, vidnestScraper, rivestreamScraper, lookmovieScraper, aetherlulScraper, xpassScraper, arc018Scraper, filmoScraper].map((scraper) => ({ ...scraper, version: __PACKAGE_VERSION__ }));
 
 export default scrapers;

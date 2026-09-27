@@ -1,7 +1,7 @@
 # stremio-tv-plugin-web-scraper
 
 Web-link scrapers for several streaming sites (CineJoy, Flixer, bCine, Movy,
-ShuttleTV, 7Movies, Cinezo, MoviesAPI, Vidrock, VixSrc, Atlantic, Vidlove, Vidnest, Rivestream, LookMovie, Aether): each searches its site for a title and returns
+ShuttleTV, 7Movies, Cinezo, MoviesAPI, Vidrock, VixSrc, Atlantic, Vidlove, Vidnest, Rivestream, LookMovie, Aether, XPass, arc018, Filmo): each searches its site for a title and returns
 the best direct, per-quality video link, ready to be handed to a player.
 They ship as one package, `streaming-sites`, for `stremio-tv-plugin-web-links`.
 
@@ -10,11 +10,13 @@ and Movy speak their players' encrypted APIs directly (the crypto rebuilt in
 Node, or a zero-import WASM run standalone), bCine's stream is in its embed
 page's HTML, 7Movies' player API is plain JSON, and Cinezo, MoviesAPI, Vidrock,
 VixSrc, Atlantic, Vidlove, Vidnest, Rivestream, LookMovie and Aether have open
-APIs. All sixteen are plain HTTP.
+APIs. XPass, arc018 and Filmo decrypt their players' answers (XPass) or speak
+the Byse, VOE and Vidmoly file hosts (`src/byse.mts`, `src/voe.mts`). All
+nineteen are plain HTTP.
 
 ## Sites
 
-`dist/` is one package (`streaming-sites`) that exports sixteen scrapers, each registered by the
+`dist/` is one package (`streaming-sites`) that exports nineteen scrapers, each registered by the
 host under its own id. Every one asks its player's API directly (an
 `HttpSite`, no Chromium involved). The browser-driven versions (`BrowserSite`s
 that opened the player in Chromium and read the media URL it requested) are
@@ -63,6 +65,9 @@ and then.
 | Rivestream | scrapper.rivestream.app (`vanguard`) | 4K | No browser: JSON API, unwraps its proxy URL; needs `Origin` (web-links >= 0.9.0). 4K HEVC master on the cinejoy CDN. <1s. Found by watching P-Stream. |
 | LookMovie | lookmovie2.to | 480p (some 720/1080) | No browser: search -> play page -> access API. Movies and TV. Mostly 480p; some AES-128. 3-5s. Found by watching P-Stream. |
 | Aether | lul.aether.cx | 1080p | No browser: JSON API, no headers anywhere. Backend of the Aether P-Stream fork. 1-3s. Found by watching P-Stream. |
+| XPass | play.xpass.top (1Shows' "Premium embeds") | 1080p | No browser: the server list is AES-256-GCM with a key hashed from the request's own path and token. VIP (1x2.space) and LUL servers. 2s. |
+| arc018 | arc018.stream (also BFLIX's backend) | 1080p | No browser: page token -> `ajax.php` -> Byse (challenge, ECDSA attest, proof of work, AES-GCM playback; `src/byse.mts`) and Vidmoly. Movies and TV, mostly 720p. 2-5s. |
+| Filmo | filmo.to | 1080p | No browser: German site, movies only; VOE (`src/voe.mts`) and Byse mirrors per language (English/German). 8-10s. |
 
 Checked and left out:
 - watch.spencerdevs.xyz plays in a browser, but its CDN returns 403 to any

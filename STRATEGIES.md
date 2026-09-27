@@ -107,6 +107,41 @@ The vidnest player also wraps some upstreams in its own proxies (`vidproxy.*.wor
 
 ---
 
+## play.xpass.top  (status: implemented in 1.23.0 -- `src/sites/xpass.mts`)
+
+1Shows' "Premium embeds" server (viduki.net/4 iframes it). Plain HTTP, checked 2026-09-27 on Inception and GoT S1E1.
+
+1. `GET https://play.xpass.top/e/movie/<tmdb>` or `/e/tv/<tmdb>/<s>/<e>`: the HTML has `var dataUrl="/data/movie/<tmdb>?autostart=...&token=<v3|...>.<64 hex>"`.
+2. `GET` that dataUrl: the body is base64url(iv[12] || AES-256-GCM ciphertext || tag). Key = SHA-256 of the string `spv3-data-response|spv3-build-1787821613-50e5fc97c9dce367|<dataUrl pathname>|<token>`. The build label is a constant inside the player script `/static/<random>.js` (loaded by `/static/mainmini.js`; both obfuscated with the usual string-array rotator -- run the decoder in `node:vm` to read them). If decryption fails, it rotated.
+3. Plaintext: `[{id, name:"VIP 1", url:"/vip/<blob>/1/playlist.json", dl}, ...]`, 30-60 servers (VIP, FIL, WIS, FEB, BOX, LUL, VID, MOL, BIG, MIX, TAP, SAF, ZUR, MEG, VXR, VRK).
+4. `GET` a server's `playlist.json` (Referer the embed): `{playlist:[{sources:[{file, type:"hls"}]}]}`.
+
+What played (ffmpeg, Referer `https://play.xpass.top/` alone): **VIP** (`vip.1x2.space/playlist/.../master.m3u8`, the 640x266/1280x534/1920x800 encode vidlove also serves) and **LUL** (`cflul.*.workers.dev`, Aether's CDN; 1080p on TV). FIL/WIS masters were empty or 404, MEG timed out, FEB is FebBox at 360p, BOX is MP4. The playlist endpoint answers 429 after ~15 quick calls, so the scraper asks at most two VIP and two LUL servers.
+
+## Byse (ex-Filemoon)  (status: implemented in 1.23.0 -- `src/byse.mts`, used by arc018 and filmo)
+
+The embed (`https://<rotating domain>/e/<code>`, e.g. mfw09.org, bysezejataos.com; `/d/<code>` is the same video's download page) is a React app; everything below was read from `assets/videoPagesBundle-*.js` and `assets/pow-*.js` and confirmed by logging the page's requests (hooking `crypto.subtle` and `allHeaders()`, see AGENTS.md). All `POST`s go to the embed's own origin with `Referer: <the page that iframes it>`, `Origin: <embed origin>`, `X-Embed-Origin: <referer host>`, `X-Embed-Parent: <embed url>`, `X-Embed-Referer: <referer>`.
+
+1. `POST /api/videos/access/challenge` (no body) -> `{challenge_id, nonce}`.
+2. Make an ECDSA P-256 key, sign the nonce's UTF-8 bytes (SHA-256, raw r||s, base64url). `POST /api/videos/access/attest {viewer_id:"", device_id:"", challenge_id, nonce, signature, public_key:<JWK x/y>, client:{user_agent, platform, screen_*, webgl_*, canvas_hash, audio_hash, fonts_hash, ...}, storage:{}, attributes:{entropy:"high"}}` -> `{token, viewer_id, device_id, confidence}`. The client profile is only scored: a made-up Mac Chrome with random hashes gets 0.55 (headless Chromium 0.88) and passes. Send `Cookie: byse_viewer_id=..; byse_device_id=..` from here on.
+3. `POST /api/videos/<code>/embed/captcha {fingerprint}` -> `{pow_nonce, pow_difficulty:16, pow_token, algorithm:"sha256-leading-zero-bits"}`. Despite the name the hash is **not** SHA-256: it is a custom 512-word memory-hard mix of ChaCha quarter rounds (`gr` in `pow-*.js`, ported in `powHash`). Solution = first counter `c` with `leadingZeroBits(hash("<pow_nonce>:<c>")) >= difficulty`; ~65k tries, 0.5-3 s in Node.
+4. `POST /api/videos/<code>/embed/captcha/verify {pow_token, solution, fingerprint}` -> `{token}`.
+5. `POST /api/videos/<code>/embed/playback {fingerprint}` with `X-Captcha-Token: <token>` -> `{playback:{iv, payload, key_parts[30], version}}` (without steps 1-2 this answers 405). Key = base64url(key_parts[v-1]) || base64url(key_parts[31-v-1]) (v=12 -> parts 12 and 19, 16 bytes each); AES-256-GCM, tag = last 16 bytes of payload. Plaintext: `{sources:[{url:<master.m3u8>, label:"1080p", height}], tracks}`.
+
+The master (`*-sprintcdn.*/hls2/.../master.m3u8?t=&s=&e=10800&...&asn=<caller ASN>`) plays with no Referer at all; the label always says 1080p, the real rendition is often 1280x536. The URL is bound to the resolving network's ASN, so resolve where you play. Whole resolve 0.7-3 s.
+
+## VOE  (status: implemented in 1.23.0 -- `src/voe.mts`, used by filmo)
+
+`voe.sx/e/<code>` returns `window.location.href = '<mirror>/e/<code>'`. The mirror page has `<script type="application/json">["<blob>"]</script>`: rot13, delete the markers `@$ ^^ ~@ %? *~ !! #&`, base64-decode, subtract 3 from every char code, reverse, base64-decode -> JSON with `source` (HLS master, multi-audio renditions as `#EXT-X-MEDIA`) and `direct_access_url` (MP4). The master is ASN-bound (`asn=`) and played with or without a Referer.
+
+## arc018.stream / BFLIX  (status: implemented in 1.23.0 -- `src/sites/arc018.mts`)
+
+Same backend (the `data-token` blobs and videos match). Movie page `/watch-movie/<slug>-<year>-watch-online/`, episode page `/episode/<slug>-<year>-watch-online/sXX-eYY/`; slug = title lower-cased with every run of non-alphanumerics one `-` (`Léon: The Professional` -> `l-on-the-professional`); `/search?q=` as fallback. The page's `<section ... data-token="...">` goes to `POST /ajax/ajax.php` as multipart `players=<token>` (movie) or `players_show=<token>` (episode) -> `[{name:"arc018", link:"https://mfw09.org/e/<code>?sub.info=..."}, {name:"Vidmoly", link:"https://kaembed.net/embed-<id>.html?..."}]`. Byse: above. Vidmoly: the embed HTML has `sources: [{ file: '<master.m3u8>' }]`; plays with Referer `https://kaembed.net/`. BFLIX movies also redirect straight through `https://0123movie.space/mv/<imdb>/<tmdb>/` -> the Byse embed (an unknown imdb falls back to `vidsrc-embed.ru`).
+
+## filmo.to  (status: implemented in 1.23.0 -- `src/sites/filmo.mts`)
+
+German, movies only; a Laravel site. `GET /search/suggest?q=` -> `{movies:[{title,url}]}` (German release titles, so the scraper also asks TMDB for the `de-DE` title). The movie page has one `provider-row__lang` row per audio language (English / Deutsch) with chips `data-p="<Laravel encrypted blob>" aria-label="VOE|Byse"`. With the page's session cookies and `<meta name="csrf-token">`: `POST /n {"p":...}` (`X-CSRF-TOKEN`) -> `{x}`; `GET /n/<x>` -> 302 to the VOE embed, or a 200 interstitial whose `<a class="open" href>` is the Byse `/d/<code>` page (use `/e/<code>`). Tokens are single use.
+
 ## vidzee  (status: rejected -- redundant)
 
 `core.vidzee.wtf/streams/movie/{id}?s={server}&e=1` returns `{"c": "<encrypted>"}` (server `ipcloud` gave an HLS master on `cdn1.ngcorp.dad`, the same Atlas CDN whose segments are 403 "domain forbidden"). The plain call with `s=dcloud` returned 502. Its useful output is available more simply from vidrock (same sources) and vidnest's `vidzee` route (a single MKV that timed out). No further work justified.

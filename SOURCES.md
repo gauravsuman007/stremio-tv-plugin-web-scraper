@@ -11,7 +11,7 @@ Every source considered for this bundle, so the list can be worked through. The 
 
 Sources: the *Stream Aggregators*, *Dedicated-Server*, *Multi-Server* and *P-Stream Forks* sections of <https://fmhy.net/video> (checked 2026-09-27), plus atlantic.st, nepu.io, ee3.me and pressplayz.to supplied directly. Triage was a single homepage fetch per site (status, Cloudflare/Turnstile markers, sign-in redirect) plus a scan of its JS bundles for the upstream players it references. The p-stream GitHub org has no usable code (DMCA-disabled library, Turnstile-gated API), so P-Stream was studied black-box instead: which upstream APIs a live fork calls (STRATEGIES.md).
 
-Totals: implemented 12, candidate 0, blocked 0, possible 3, untriaged 104, rejected 45 (163 sites).
+Totals: implemented 16, candidate 0, blocked 1, possible 5, untriaged 88, rejected 53 (163 sites).
 
 ## Upstream players (where the leverage is)
 
@@ -42,8 +42,14 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | vidcore.net / vidcore.io | rejected | 403 (checked earlier). |
 | api.wing.st | implemented | CineJoy's backend (cinejoy scraper). Plain HTTP since 1.18.0 (was browser-driven): requests to `/g` are sealed by running its zero-import `crush.wasm` in Node, answers are AES-GCM. Servers: Nebula (nebula.bright67.online, same files as cinesrc's Nebula), Lisbon (lit.cheaptruckrepairs.cc, up to 4K), Solara (cheaptruckrepairs.cc), Athens. See STRATEGIES.md. |
 | cinesrc.st | implemented | ShuttleTV's backend (shuttletv scraper). Plain HTTP since 1.18.0 (was browser-driven): its challenge/ECDH protocol is rebuilt in `src/cinesrc.mts`, only its zero-import `pow-v3.wasm` is run. Providers seen: Nebula (nebula.bright67.online, 1080p), Lisbon (up to 4K). See STRATEGIES.md. |
+| play.xpass.top (1x2.space) | implemented | Shipped in 1.23.0 (`xpass`). 1Shows' "Premium embeds"; TMDB-keyed `/e/movie/<id>`. The `/data/` answer is AES-256-GCM with key SHA-256(`spv3-data-response|<build>|<path>|<token>`); ~50 servers, VIP (vip.1x2.space) and LUL (cflul, Aether's CDN) play. See STRATEGIES.md. |
+| Byse (ex-Filemoon: mfw09.org, bysezejataos.com, ...) | implemented | `src/byse.mts`, used by arc018 and filmo (1.23.0). challenge -> ECDSA attest -> custom memory-hard PoW -> AES-GCM playback whose key is two of its own `key_parts`. Stream URLs are ASN-bound. PrimeWire's Filemoon servers are this too. See STRATEGIES.md. |
+| VOE (voe.sx + rotating mirrors) | implemented | `src/voe.mts`, used by filmo (1.23.0). Config is rot13/base64/shift/reverse/base64 JSON in the embed page; `source` is an HLS master (multi-audio as `#EXT-X-MEDIA`). ASN-bound. |
+| Vidmoly (kaembed.net) | implemented | Used by arc018 (1.23.0): the embed page has `sources: [{file: '<master.m3u8>'}]` in plain JS; Referer kaembed.net. |
+| viduki.net | possible | 1Shows' own player (`api.viduki.net/main/<type>/<id>?srv=`, altcha challenge + `makima` wasm + `pepper-key`). Its stream is the hunts439kow `i-arch-400` encode (640x266..1920x800), the same files as vidlove's vidapi, so not pursued. |
+| vidy.st | implemented | Covered by movy: it calls `api.wecollege.net/miami/sources` with movy's seed scheme. |
 
-## Implemented (12)
+## Implemented (16)
 
 | Site | Section | Note |
 |---|---|---|
@@ -59,44 +65,36 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | [Movy](https://www.movy.sx/) | stream-aggregators | movy -- plain HTTP (api.wecollege.net, seed keystream ported) since 1.19.0 |
 | [Rive, 2, 3 or CorsFlix, 2, 3](https://www.rivestream.app/) | stream-aggregators | rivestream (Rivestream) -- 1.15.0; its scraper API is plain JSON (the Turnstile is only on the site UI) |
 | [ShuttleTV, 2, 3](https://shuttletv.su/) | stream-aggregators | shuttletv -- plain HTTP (cinesrc protocol, src/cinesrc.mts) since 1.18.0 |
+| [arc018](https://arc018.stream/) | dedicated-server | arc018 -- 1.23.0; plain HTTP: page `data-token` -> `ajax.php` -> a Byse embed (mfw09.org, src/byse.mts) and Vidmoly (kaembed.net). Movies and TV, 720p-1080p |
+| [BFLIX](https://bbflix.one/) | dedicated-server | covered by arc018: same backend (same `ajax.php` tokens and Byse/Vidmoly videos); its movies also redirect via `0123movie.space/mv/<imdb>/<tmdb>/` to the same Byse file |
+| [Filmo](https://filmo.to/) | dedicated-server | filmo -- 1.23.0; German site, movies only. VOE (src/voe.mts) and Byse mirrors per audio language (English/German), minted via `POST /n`. 720p-1080p |
+| [1Shows, 1Flex or 1Tube](http://1shows.bz) | multi-server | xpass -- 1.23.0; its "Premium embeds" server is play.xpass.top (AES-GCM server list, key = SHA-256 of path+token). Its other servers: viduki.net (own API, altcha + `makima` wasm; same hunts439kow encode as vidlove, not built), vidy.st (= movy's wecollege backend, covered), vidfast, vidlink, vidrock (covered), vidzee |
 
 ## Candidates (verified, ready to build) (0)
 
 | Site | Section | Note |
 |---|---|---|
 
-## Blocked (works, but the host cannot play it yet) (0)
+## Blocked (works, but the host cannot play it yet) (1)
 
 | Site | Section | Note |
 |---|---|---|
+| [Abibli](https://abibli.com/) | dedicated-server | 2026-09-27: its own player `rov.funnyotter.xyz/#<id>` (from `$store.streamPlayer.play(...)` on the title page). `POST https://s5v.lazyrocket.space/mQ7x2P {video, client:<32 hex>}` with header `x-s5v-client: <same>` returns a signed `/<id>/<x>.txt?session=&exp=&sig=&client=` master (Hindi+English audio). Works with plain HTTP, but the master's child playlists and segments (`.txt`, `.woff2`) are listed **without** the query and 403 without it: the page's player appends `?session=...` to every request. Needs the relay to carry a master's query onto its relative children (plus `X-S5v-Client`, which `X-*` already allows). |
 
-## Possible (leads) (3)
+## Possible (leads) (5)
 
 | Site | Section | Note |
 |---|---|---|
 | [RidoMovies](https://ridomovies.is/) | dedicated-server | 2026-09-27: plain fetch of `/movies/<slug>` (curl 403s the raw domain, but the site itself HTTP-redirects to `ridomovie.to` and loads fine there with a browser UA -- not a real Cloudflare gate, `solveInProcess` not needed). `/movies/inception` resolves; the player is a same-origin iframe whose real `src` is only set on click, and every click target on the page is intercepted by an ad overlay (`directyp.org` popunder) in an automated Chromium session, so the actual stream request was never captured this pass. Needs a real click-through (dismiss/close the ad tab first) or a devtools-attached manual session. Not attempted: cookie check on the eventual player. |
 | [Bingr](https://bingr.one/) | stream-aggregators | 2026-09-27: no Cloudflare gate in practice (Turnstile script loads but never blocks). `POST https://api.bingr.one/api/stream` with `{"srv":"s40","t":"movie","id":"<tmdb>","query":{"title":...,"year":...}}` (plain JSON, `Referer: https://bingr.one/`, no auth header, no cookie) returns `{"scraperName":"DarkMatter","sources":[{"url":"https://img.rousav.tech/media/<id>/index.m3u8",...}]}`. Verified with ffmpeg: the master (despite being named `index.m3u8` -> `tiles.m3u8` -> segments named `tiles/00000.png`) is real H.264 1920x800 video, full 2h28m runtime for Inception, decodes cleanly for 8s with only `Referer` (no cookie). But the master has no `#EXT-X-MEDIA` audio reference at all -- audio lives on a completely separate, unlinked `track_english.m3u8` (confirmed AAC via ffprobe on its segments) that the relay has no way to attach, so as returned this is video-only. Needs checking whether another `srv` value (only `s40`/DarkMatter tried) gives a master that properly links its audio track before this is buildable. |
 | [Stellar](https://stellar.gdn/) | stream-aggregators | 2026-09-27: no real Cloudflare gate. The watch page (`/watch/movie/<tmdb>`) calls `POST https://api.stellar.gdn/api/resolve` with an encrypted body (`q`/`s`/`t`/`d` fields, opaque) and gets back a signed `cdn.reallyfast.ch/stream/<id>?e=<exp>&sig=<hex>` URL. That master fetches fine with just `Referer: https://stellar.gdn/` (HTTP 200, real playlist: 360p/1080p/4K variants each with a proper `#EXT-X-MEDIA` AUDIO group -- exactly the shape AGENTS.md wants) but every leaf/segment URL under it (`cdn.reallyfast.ch/v/...`) answered `502` on every attempt, with fresh tokens, with and without `Origin`, across all three renditions and both audio tracks. Either the reallyfast.ch origin is flaky, or it wants something (TLS fingerprint, a session cookie from `api.stellar.gdn`) a plain curl doesn't send. The `/api/resolve` request body itself is encrypted client-side (same shape as the already-`possible` `api.speedracelight.com` entry above) so this can't be reproduced without replaying the site's own JS. Not verified end to end; do not implement from this alone. |
+| [MovieNestBD](https://movienestbd.best/) | dedicated-server | 2026-09-27: Bengali/Hindi-dub catalogue. Page -> `embed.jiofiles.pics/<id>` -> `indbd.pages.dev/embed/<host>/<vid>`; `indbd.pages.dev/api/info?url=<host>&id=<vid>` (plain JSON) gives `hlsVideoTiktok`, a master on e.g. `sasknsjks.seekplayer.vip/hls/.../master.m3u8` that fetches with no Referer and has Hindi+English `#EXT-X-MEDIA` audio. Its own `/api/proxy.m3u8?v=` 403s outside the page. Segments are on a TikTok ad CDN (`p16-ad-site-sign-sg.tiktokcdn.com`): ffmpeg decoded, but slowly (8 s took over a minute). Title lookup is `/search?q=` -> `/<slug>`. Worth building if the segment speed holds up through the relay. |
+| [PrimeWire, 2, 3](https://www.primewire.mov/) | dedicated-server | 2026-09-27: front-end of primesrc (`/js/primesrc-*.js`). `GET /api/v1/s?s_id=<id>&tmdb_id=<tmdb>&type=movie` is plain JSON listing servers (Filemoon = Byse, etc.) with a `key` each, but `GET /api/v1/l?key=` (the link) sits behind a Cloudflare **managed challenge** (and a Turnstile `token` on 403). The resulting embeds (Byse, ...) are cookie-free, so this needs a per-resolve challenge solve -- real FlareSolverr, not the in-process solver. |
 
-## Untriaged (104)
+## Untriaged (88)
 
 | Site | Section | Note |
 |---|---|---|
-| [Abibli](https://abibli.com/) | dedicated-server | no known upstream seen in its bundles; needs its own look |
-| [arc018](https://arc018.stream/) | dedicated-server | no known upstream seen in its bundles; needs its own look |
-| [BFLIX](https://bbflix.one/) | dedicated-server | no known upstream seen in its bundles; needs its own look |
-| [Downloads-Anymovies](https://www.downloads-anymovies.co/) | dedicated-server | no known upstream seen in its bundles; needs its own look |
-| [Filmo](https://filmo.to/) | dedicated-server | no known upstream seen in its bundles; needs its own look |
-| [FshareTV](https://fsharetv.co/) | dedicated-server | no known upstream seen in its bundles; needs its own look |
-| [Levidia, 2, 3](https://www.levidia.ch/) | dedicated-server | no known upstream seen in its bundles; needs its own look |
-| [MovieBox, 2, 3, 4, 5](https://movieboxonline.net) | dedicated-server | no known upstream seen in its bundles; needs its own look |
-| [MovieNestBD](https://movienestbd.best/) | dedicated-server | no known upstream seen in its bundles; needs its own look |
-| [PrimeWire, 2, 3](https://www.primewire.mov/) | dedicated-server | no known upstream seen in its bundles; needs its own look |
-| [ShowBox](https://www.showbox.media/) | dedicated-server | homepage mentions Turnstile/captcha; may only gate the site UI, not the embed. Low priority |
-| [SoapGo](https://soapgo.to/) | dedicated-server | no known upstream seen in its bundles; needs its own look |
-| [SubSL](https://subsl.top/) | dedicated-server | no known upstream seen in its bundles; needs its own look |
-| [YesMovie](https://ww1.yesmovies.ag/) | dedicated-server | no known upstream seen in its bundles; needs its own look |
-| [1Shows, 1Flex or 1Tube](http://1shows.bz) | multi-server | no known upstream seen in its bundles; needs its own look |
 | [321Movies](https://321movies.xyz/) | multi-server | no known upstream seen in its bundles; needs its own look |
 | [7REELS](https://7reels.cc/) | multi-server | no known upstream seen in its bundles; needs its own look |
 | [AmberFlix](https://www.amberflix.xyz/) | multi-server | no known upstream seen in its bundles; needs its own look |
@@ -186,7 +184,7 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | [Watchott or EmnexMovies](https://watchott.org/) | stream-aggregators | no known upstream seen in its bundles; needs its own look |
 | [Willow](https://willow.arlen.icu/) | stream-aggregators | no known upstream seen in its bundles; needs its own look |
 
-## Rejected (45)
+## Rejected (53)
 
 | Site | Section | Note |
 |---|---|---|
@@ -235,3 +233,11 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | [Vivarium](https://viv.st/) | stream-aggregators | real Cloudflare managed challenge/Turnstile -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver (plain playwright-core Chromium), does not clear within 30s (real FlareSolverr needs a patched browser to get past this, out of scope here) |
 | [Way2Movies, 2](https://beta.way2movies.live/) | stream-aggregators | real Cloudflare managed challenge/Turnstile -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver (plain playwright-core Chromium), does not clear within 30s (real FlareSolverr needs a patched browser to get past this, out of scope here) |
 | [ZXCSTREAM](https://zxcprime.icu/) | stream-aggregators | DASH only |
+| [Downloads-Anymovies](https://www.downloads-anymovies.co/) | dedicated-server | dead: search answers 410 Gone, movie pages 500 (2026-09-27) |
+| [FshareTV](https://fsharetv.co/) | dedicated-server | 2026-09-27: `/api/file/<id>/source` only ever returns the YouTube trailer without an account; Inception's page is a 404 |
+| [Levidia, 2, 3](https://www.levidia.ch/) | dedicated-server | 2026-09-27: a link directory (goojara family); every `go.php?url=` outlink answered 404, with or without its session cookie (login-gated) |
+| [MovieBox, 2, 3, 4, 5](https://movieboxonline.net) | dedicated-server | aoneroom/moviebox h5 backend (`h5.aoneroom.com/wefeed-h5-bff`) -- the same moviebox catalogue already rejected as MP4/DASH-only |
+| [ShowBox](https://www.showbox.media/) | dedicated-server | 2026-09-27: links go to FebBox shares, which need a FebBox account cookie to stream (xpass exposes the same FebBox files at 360p as its `FEB` servers) |
+| [SoapGo](https://soapgo.to/) | dedicated-server | 2026-09-27: `/embed/resolve/<token>` returns only `{"type":"mp4"}` sources (proxy.youwantsee.shop); no HLS |
+| [SubSL](https://subsl.top/) | dedicated-server | 2026-09-27: Sinhala-subtitled catalogue; plays plain MP4 files from Facebook's CDN (fbcdn.net); no HLS |
+| [YesMovie](https://ww1.yesmovies.ag/) | dedicated-server | Cloudflare Turnstile on search and pages (2026-09-27, headless Chromium looped on it) -- retriage: FlareSolverr |

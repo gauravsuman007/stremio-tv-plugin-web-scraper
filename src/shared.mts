@@ -101,6 +101,16 @@ async function tmdbFindByImdbId(fetchImpl: ScraperContext["fetch"], imdbId: stri
     return null;
 }
 
+/** The title as TMDB shows it in another language (`de-DE`): some sites list only their local title. */
+export async function tmdbLocalizedTitle(fetchImpl: ScraperContext["fetch"], match: TmdbMatch, language: string): Promise<string | null> {
+    const url = new URL(`${TMDB_BASE}/${match.mediaType}/${match.tmdbId}`);
+    url.searchParams.set("api_key", TMDB_API_KEY);
+    url.searchParams.set("language", language);
+    const response = await fetchImpl(url.toString()).catch(() => null);
+    if (!response?.ok) return null;
+    const data = (await response.json()) as { title?: string; name?: string };
+    return data.title || data.name || null;
+}
 
 const MATCH_TTL_MS = 60_000;
 const matchCache = new Map<string, { at: number; match: Promise<TmdbMatch | null> }>();
