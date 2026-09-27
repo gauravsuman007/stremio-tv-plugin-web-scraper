@@ -25,8 +25,6 @@ __export(index_exports, {
 module.exports = __toCommonJS(index_exports);
 
 // src/shared.mts
-var import_playwright_core = require("playwright-core");
-var import_node_fs = require("node:fs");
 var TMDB_API_KEY = "8476a7ab80ad76f0936744df0430e67c";
 var TMDB_BASE = "https://api.themoviedb.org/3";
 var DIRECT_FILE_RE = /\.(mp4|mkv|webm)(\?.*)?$/i;
@@ -129,14 +127,6 @@ async function leafDuration(fetchImpl, url, headers2) {
   for (const match of text.matchAll(/#EXTINF:([\d.]+)/g)) total += Number.parseFloat(match[1]);
   return total;
 }
-function findChromiumExecutable() {
-  const override = process.env.CHROMIUM_PATH;
-  if (override && (0, import_node_fs.existsSync)(override)) return override;
-  for (const candidate of ["/usr/bin/chromium-browser", "/usr/bin/chromium"]) {
-    if ((0, import_node_fs.existsSync)(candidate)) return candidate;
-  }
-  return void 0;
-}
 function variantHeight(variant) {
   return Number.parseInt(variant.resolution?.split("x")[1] ?? "0", 10) || 0;
 }
@@ -145,108 +135,153 @@ function heightFromUrl(url) {
 }
 var BEST_POSSIBLE_HEIGHT = 2160;
 var SOFT_DEADLINE_MS = 1e4;
-async function resolveSite(site, query, ctx) {
+var RESOLVE_DEADLINE_MS = 6e4;
+async function verifyCapture(site, { mediaUrl, label }, displayTitle, ctx) {
+  const variants = await expandMasterPlaylist(ctx.fetch, mediaUrl, mediaHeaders(site)).catch(() => null);
+  const top = variants?.[0];
+  if (!variants || !top) return null;
+  if (!DIRECT_FILE_RE.test(top.url)) {
+    const duration = await leafDuration(ctx.fetch, top.url, mediaHeaders(site)).catch(() => 0);
+    if (duration !== null && duration < MIN_PLAUSIBLE_DURATION_S) return null;
+  }
+  const height = Math.max(...variants.map(variantHeight)) || heightFromUrl(mediaUrl);
+  const score = height * 1e9 + Math.max(...variants.map((v) => v.bandwidth ?? 0));
+  const resolutions = variants.map((v) => v.resolution).filter((r) => Boolean(r));
+  const multi = variants.length > 1;
+  const mirror = label ? `${site.name} mirror: ${label}` : site.name;
+  return {
+    score,
+    height,
+    label,
+    link: {
+      url: multi ? mediaUrl : top.url,
+      resolveKind: "hls",
+      quality: resolutions.length ? `${resolutions.join("/")} \xB7 ${label ?? site.name}` : height ? `${height}p \xB7 ${label ?? site.name}` : mirror,
+      title: displayTitle,
+      referrer: site.referrer,
+      ...site.headers ? { headers: site.headers } : {},
+      ...height ? { height } : {}
+    }
+  };
+}
+function collectCandidates(site, captures, displayTitle, ctx, deadlineMs) {
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    const candidates = [];
+    let pending = 0;
+    let exhausted = false;
+    let finished = false;
+    let softTimer;
+    const finish = (complete) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(hardTimer);
+      clearTimeout(softTimer);
+      void captures.return(void 0).catch(() => {
+      });
+      candidates.sort((a, b) => b.score - a.score);
+      resolve({ candidates, complete: complete || candidates.length > 0 });
+    };
+    const hardTimer = setTimeout(() => finish(false), deadlineMs);
+    const onCandidate = (candidate) => {
+      candidates.push(candidate);
+      if (candidate.height >= BEST_POSSIBLE_HEIGHT) return finish(true);
+      softTimer ??= setTimeout(() => finish(true), Math.max(0, SOFT_DEADLINE_MS - (Date.now() - startedAt)));
+    };
+    void (async () => {
+      try {
+        while (!finished) {
+          const step = await captures.next();
+          if (step.done || finished) break;
+          pending++;
+          void verifyCapture(site, step.value, displayTitle, ctx).catch(() => null).then((candidate) => {
+            pending--;
+            if (candidate && !finished) onCandidate(candidate);
+            if (exhausted && pending === 0) finish(true);
+          });
+        }
+      } catch {
+      }
+      exhausted = true;
+      if (pending === 0) finish(true);
+    })();
+  });
+}
+function displayName(match) {
+  return match.year ? `${match.title} (${match.year})` : match.title;
+}
+var LINK_MAX_AGE_MS = 6 * 60 * 6e4;
+var PROBE_TIMEOUT_MS = 5e3;
+var linkCache = /* @__PURE__ */ new Map();
+function linkKey(resolveId, query) {
+  return `${resolveId}|${query.type}|${query.id}|${query.season ?? ""}|${query.episode ?? ""}`;
+}
+function rememberLinks(site, candidates, query) {
+  const now = Date.now();
+  for (const [key, entry] of linkCache) if (now - entry.at > LINK_MAX_AGE_MS) linkCache.delete(key);
+  if (candidates[0]) linkCache.set(linkKey(site.id, query), { at: now, link: candidates[0].link });
+  for (const candidate of candidates) {
+    if (candidate.label) linkCache.set(linkKey(`${site.id}~${candidate.label}`, query), { at: now, link: candidate.link });
+  }
+}
+async function stillPlays(link, ctx) {
+  try {
+    const response = await ctx.fetch(link.url, {
+      headers: { Referer: link.referrer ?? "", ...link.headers, ...DIRECT_FILE_RE.test(link.url) ? { Range: "bytes=0-1023" } : {} },
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS)
+    });
+    if (DIRECT_FILE_RE.test(link.url)) return response.ok;
+    return response.ok && (await response.text()).trimStart().startsWith("#EXTM3U");
+  } catch {
+    return false;
+  }
+}
+async function candidatesFor(site, query, ctx, deadlineMs) {
   const match = await resolveTmdbMatch(query, ctx.fetch);
   if (!match) return null;
   const target = { match, season: query.season, episode: query.episode };
-  const displayTitle = match.year ? `${match.title} (${match.year})` : match.title;
-  if ("httpCaptures" in site) return pickBestCapture(site, site.httpCaptures(target, ctx), displayTitle, ctx);
-  const executablePath = findChromiumExecutable();
-  if (!executablePath) return null;
-  const browser = await import_playwright_core.chromium.launch({
-    headless: true,
-    executablePath,
-    args: ["--no-sandbox", "--disable-dev-shm-usage"],
-    proxy: ctx.proxyUrl ? { server: ctx.proxyUrl } : void 0
-  });
-  try {
-    const context = await browser.newContext({
-      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
-    });
-    const page = await context.newPage();
-    context.on("page", (popup) => void popup.close().catch(() => {
-    }));
-    return await pickBestCapture(site, site.captures(page, target, ctx), displayTitle, ctx);
-  } finally {
-    await browser.close();
-  }
+  const result = await collectCandidates(site, site.httpCaptures(target, ctx), displayName(match), ctx, deadlineMs);
+  rememberLinks(site, result.candidates, query);
+  return { match, ...result };
 }
-async function pickBestCapture(site, captures, displayTitle, ctx) {
-  let best = null;
-  const startedAt = Date.now();
-  try {
-    while (true) {
-      const pending = captures.next();
-      pending.catch(() => {
-      });
-      let step;
-      if (best) {
-        const remainingMs = SOFT_DEADLINE_MS - (Date.now() - startedAt);
-        if (remainingMs <= 0) break;
-        step = await Promise.race([pending, new Promise((r) => setTimeout(() => r(null), remainingMs))]);
-      } else {
-        step = await pending;
-      }
-      if (!step || step.done) break;
-      const { mediaUrl, label } = step.value;
-      let variants;
-      try {
-        variants = await expandMasterPlaylist(ctx.fetch, mediaUrl, mediaHeaders(site));
-      } catch {
-        continue;
-      }
-      const top = variants[0];
-      if (!top) continue;
-      if (!DIRECT_FILE_RE.test(top.url)) {
-        const duration = await leafDuration(ctx.fetch, top.url, mediaHeaders(site)).catch(() => 0);
-        if (duration !== null && duration < MIN_PLAUSIBLE_DURATION_S) continue;
-      }
-      const height = Math.max(...variants.map(variantHeight)) || heightFromUrl(mediaUrl);
-      const score = height * 1e9 + Math.max(...variants.map((v) => v.bandwidth ?? 0));
-      if (best && score <= best.score) continue;
-      const resolutions = variants.map((v) => v.resolution).filter((r) => Boolean(r));
-      const multi = variants.length > 1;
-      const mirror = label ? `${site.name} mirror: ${label}` : site.name;
-      best = {
-        score,
-        height,
-        link: {
-          url: multi ? mediaUrl : top.url,
-          resolveKind: "hls",
-          quality: resolutions.length ? `${resolutions.join("/")} \xB7 ${label ?? site.name}` : height ? `${height}p \xB7 ${label ?? site.name}` : mirror,
-          title: displayTitle,
-          referrer: site.referrer,
-          ...site.headers ? { headers: site.headers } : {}
-        }
-      };
-      if (best.height >= BEST_POSSIBLE_HEIGHT) break;
-    }
-  } finally {
-    void captures.return(void 0).catch(() => {
-    });
-  }
-  return best?.link ?? null;
+async function resolveSite(site, resolveId, query, ctx) {
+  const cached = linkCache.get(linkKey(resolveId, query));
+  if (cached && Date.now() - cached.at < LINK_MAX_AGE_MS && await stillPlays(cached.link, ctx)) return cached.link;
+  const found = await candidatesFor(site, query, ctx, RESOLVE_DEADLINE_MS);
+  if (!found) return null;
+  const label = resolveId.includes("~") ? resolveId.slice(resolveId.indexOf("~") + 1) : void 0;
+  return (found.candidates.find((c) => label && c.label === label) ?? found.candidates[0])?.link ?? null;
 }
+var MAX_ROWS_PER_SITE = 3;
+var SEARCH_MARGIN_MS = 1500;
 async function searchSite(site, query, ctx) {
-  if (!("httpCaptures" in site) && !findChromiumExecutable()) {
-    console.warn(`[${site.id}] no Chromium binary found (set CHROMIUM_PATH, or apk add chromium) -- skipping`);
-    return [];
-  }
-  const match = await resolveTmdbMatch(query, ctx.fetch);
-  if (!match) return [];
   if (site.available && !await site.available(ctx).catch(() => false)) return [];
-  const displayTitle = match.year ? `${match.title} (${match.year})` : match.title;
-  return [{ url: "", resolveId: site.id, resolveKind: "hls", title: `${displayTitle} \xB7 ${site.name}` }];
+  const found = await candidatesFor(site, query, ctx, Math.max(3e3, ctx.budgetMs - SEARCH_MARGIN_MS));
+  if (!found) return [];
+  const title = `${displayName(found.match)} \xB7 ${site.name}`;
+  if (!found.candidates.length) {
+    return found.complete ? [] : [{ url: "", resolveId: site.id, resolveKind: "hls", title }];
+  }
+  const rows = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const [index, candidate] of found.candidates.entries()) {
+    if (!candidate.label && index > 0) continue;
+    const resolveId = candidate.label ? `${site.id}~${candidate.label}` : site.id;
+    if (seen.has(resolveId) || seen.has(candidate.link.url)) continue;
+    seen.add(resolveId).add(candidate.link.url);
+    rows.push({ url: "", resolveId, resolveKind: "hls", title, quality: candidate.link.quality, ...candidate.height ? { height: candidate.height } : {} });
+    if (rows.length >= MAX_ROWS_PER_SITE) break;
+  }
+  return rows;
 }
 function createScraper(site) {
   return {
     id: site.id,
     name: `${site.name} \xB7 up to ${site.maxQuality}`,
     maxQuality: site.maxQuality,
-    // A BrowserSite drives Playwright/Chromium ("slow"); an HttpSite is plain fetch ("fast").
-    fetchMethod: "captures" in site ? "slow" : "fast",
+    fetchMethod: "fast",
     search: (query, ctx) => searchSite(site, query, ctx),
-    resolve: (_resolveId, query, ctx) => resolveSite(site, query, ctx)
+    resolve: (resolveId, query, ctx) => resolveSite(site, resolveId, query, ctx)
   };
 }
 
@@ -577,13 +612,8 @@ var movySite = {
   referrer: `${BASE_URL3}/`,
   maxQuality: "1080p",
   async *httpCaptures({ match, season, episode }, ctx) {
-    let seed = await getSeed(ctx.fetch, match.tmdbId);
-    let seedAt = Date.now();
-    for (const provider of PROVIDERS2) {
-      if (Date.now() - seedAt > 25e3) {
-        seed = await getSeed(ctx.fetch, match.tmdbId);
-        seedAt = Date.now();
-      }
+    const seed = await getSeed(ctx.fetch, match.tmdbId);
+    const answers = PROVIDERS2.map((provider) => {
       const params = new URLSearchParams({
         title: encodeURIComponent(match.title),
         mediaType: match.mediaType,
@@ -594,9 +624,11 @@ var movySite = {
         enc: "2",
         seed
       });
-      const sources = await ctx.fetch(`${API3}/${provider}/sources?${params}`, { headers, signal: AbortSignal.timeout(TIMEOUT_MS5) }).then(async (r) => r.ok ? JSON.parse(decrypt2(await r.text(), seed, match.tmdbId)).sources : void 0).catch(() => void 0);
-      const mediaUrl = sources?.find((s) => s.url)?.url;
-      if (mediaUrl) yield { mediaUrl, label: provider };
+      return ctx.fetch(`${API3}/${provider}/sources?${params}`, { headers, signal: AbortSignal.timeout(TIMEOUT_MS5) }).then(async (r) => r.ok ? JSON.parse(decrypt2(await r.text(), seed, match.tmdbId)).sources : void 0).catch(() => void 0);
+    });
+    for (const [i, answer] of answers.entries()) {
+      const mediaUrl = (await answer)?.find((s) => s.url)?.url;
+      if (mediaUrl) yield { mediaUrl, label: PROVIDERS2[i] };
     }
   }
 };
@@ -1243,5 +1275,5 @@ var shuttletvSite = {
 var shuttletv_default = createScraper(shuttletvSite);
 
 // src/index.mts
-var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default].map((scraper) => ({ ...scraper, version: "1.19.0" }));
+var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default].map((scraper) => ({ ...scraper, version: "1.20.0" }));
 var index_default = scrapers;
