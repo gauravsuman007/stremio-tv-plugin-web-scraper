@@ -29,11 +29,7 @@ var import_playwright_core = require("playwright-core");
 var import_node_fs = require("node:fs");
 var TMDB_API_KEY = "8476a7ab80ad76f0936744df0430e67c";
 var TMDB_BASE = "https://api.themoviedb.org/3";
-var MASTER_PLAYLIST_RE = /\.m3u8(?:[?&#].*)?$/i;
 var DIRECT_FILE_RE = /\.(mp4|mkv|webm)(\?.*)?$/i;
-var SEGMENT_OR_INIT_RE = /(^|\/)(init|seg(ment)?[-_]?\d+|\d+)\.(mp4|m4s|webm)(\?.*)?$/i;
-var FILE_CANDIDATE_GRACE_MS = 4e3;
-var IGNORED_MEDIA_RE = /media-imdb\.com|youtube\.com|ytimg\.com|googlevideo\.com/i;
 async function tmdbSearch(fetchImpl, query) {
   const url = new URL(`${TMDB_BASE}/search/multi`);
   url.searchParams.set("api_key", TMDB_API_KEY);
@@ -90,57 +86,16 @@ async function lookupTmdbMatch(query, fetchImpl) {
   const matches = await tmdbSearch(fetchImpl, query.title);
   return matches.find((m) => m.mediaType === wantType) ?? matches[0] ?? null;
 }
-async function captureMediaUrl(page, timeoutMs, trigger, options = {}) {
-  const playlistRe = options.isPlaylist ?? MASTER_PLAYLIST_RE;
-  let resolveMedia;
-  const donePromise = new Promise((resolve) => {
-    resolveMedia = resolve;
-  });
-  let fileCandidate = null;
-  let graceTimer = null;
-  let settled = false;
-  const settle = (url) => {
-    if (settled) return;
-    settled = true;
-    if (graceTimer) clearTimeout(graceTimer);
-    resolveMedia(url);
-  };
-  const onRequest = (request) => {
-    const url = request.url();
-    if (IGNORED_MEDIA_RE.test(url)) return;
-    if (playlistRe.test(url)) {
-      settle(url);
-      return;
-    }
-    if (!fileCandidate && DIRECT_FILE_RE.test(url) && !SEGMENT_OR_INIT_RE.test(url)) {
-      fileCandidate = url;
-      graceTimer = setTimeout(() => settle(fileCandidate), FILE_CANDIDATE_GRACE_MS);
-    }
-  };
-  page.on("request", onRequest);
-  try {
-    await trigger(() => settled);
-    return await Promise.race([
-      donePromise,
-      new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs))
-    ]);
-  } catch {
-    return null;
-  } finally {
-    page.off("request", onRequest);
-    if (graceTimer) clearTimeout(graceTimer);
-  }
-}
 function mediaHeaders(site) {
   return { Referer: site.referrer, ...site.headers };
 }
-async function expandMasterPlaylist(fetchImpl, masterUrl, headers) {
+async function expandMasterPlaylist(fetchImpl, masterUrl, headers2) {
   if (DIRECT_FILE_RE.test(masterUrl)) {
-    const response2 = await fetchImpl(masterUrl, { headers: { ...headers, Range: "bytes=0-1023" } });
+    const response2 = await fetchImpl(masterUrl, { headers: { ...headers2, Range: "bytes=0-1023" } });
     if (!response2.ok) throw new Error(`direct file not fetchable: ${response2.status}`);
     return [{ resolution: null, bandwidth: null, url: masterUrl }];
   }
-  const response = await fetchImpl(masterUrl, { headers });
+  const response = await fetchImpl(masterUrl, { headers: headers2 });
   if (!response.ok) throw new Error(`master playlist not fetchable: ${response.status}`);
   const text = await response.text();
   if (!text.startsWith("#EXTM3U")) throw new Error("not a valid HLS playlist");
@@ -165,8 +120,8 @@ async function expandMasterPlaylist(fetchImpl, masterUrl, headers) {
   return variants;
 }
 var MIN_PLAUSIBLE_DURATION_S = 300;
-async function leafDuration(fetchImpl, url, headers) {
-  const response = await fetchImpl(url, { headers });
+async function leafDuration(fetchImpl, url, headers2) {
+  const response = await fetchImpl(url, { headers: headers2 });
   if (!response.ok) throw new Error(`playlist not fetchable: ${response.status}`);
   const text = await response.text();
   if (!text.includes("#EXT-X-ENDLIST") && !text.includes("#EXT-X-PLAYLIST-TYPE:VOD")) return null;
@@ -181,34 +136,6 @@ function findChromiumExecutable() {
     if ((0, import_node_fs.existsSync)(candidate)) return candidate;
   }
   return void 0;
-}
-var PAGE_LOAD_CAPTURE_TIMEOUT_MS = 2e4;
-async function* autoplayCapture(page, url, ctx, options = {}) {
-  const timeoutMs = Math.min(PAGE_LOAD_CAPTURE_TIMEOUT_MS, Math.max(8e3, ctx.budgetMs));
-  const mediaUrl = await captureMediaUrl(
-    page,
-    timeoutMs,
-    async (isDone) => {
-      if (!options.clickPlay) {
-        await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
-        return;
-      }
-      let armed = false;
-      await page.route("**/*", (route) => {
-        const request = route.request();
-        return armed && request.isNavigationRequest() && request.frame() === page.mainFrame() ? route.abort() : route.continue();
-      });
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
-      armed = true;
-      for (let attempt = 0; attempt < 4 && !isDone(); attempt++) {
-        await page.locator('button:has-text("Play"), a:has-text("Play")').first().click({ timeout: 2500, force: true }).catch(() => {
-        });
-        await page.waitForTimeout(4e3);
-      }
-    },
-    options
-  );
-  if (mediaUrl) yield { mediaUrl };
 }
 function variantHeight(variant) {
   return Number.parseInt(variant.resolution?.split("x")[1] ?? "0", 10) || 0;
@@ -325,25 +252,36 @@ function createScraper(site) {
 
 // src/sites/7movies.mts
 var BASE = "https://embed.vidrift.net";
+var TIMEOUT_MS = 15e3;
+var PROVIDERS = ["moviebox", "vaplayer", "vidlove", "vidrock"];
 var sevenMoviesSite = {
   id: "7movies",
   name: "7Movies",
-  referrer: "https://embed.vidrift.net/",
+  referrer: `${BASE}/`,
   maxQuality: "1080p",
-  async *captures(page, { match, season, episode }, ctx) {
+  async *httpCaptures({ match, season, episode }, ctx) {
     const path = match.mediaType === "movie" ? `movie/${match.tmdbId}` : `tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
-    try {
-      const response = await ctx.fetch(`${BASE}/api/boot/${path}`, { headers: { Referer: `${BASE}/` } });
-      if (response.ok) {
-        const boot = await response.json();
-        for (const stream of boot.meta?.warmStreams ?? []) {
-          const mediaUrl = stream.proxyUrl || stream.url;
-          if (mediaUrl && stream.type !== "dash") yield { mediaUrl, label: stream.provider || void 0 };
-        }
+    const headers2 = { Referer: `${BASE}/embed2/${path}` };
+    const seen = /* @__PURE__ */ new Set();
+    const offer = function* (streams) {
+      for (const stream of streams ?? []) {
+        const raw = stream.proxyUrl || stream.url;
+        if (!raw || stream.type && stream.type !== "hls") continue;
+        const mediaUrl = new URL(raw, BASE).href;
+        if (seen.has(mediaUrl)) continue;
+        seen.add(mediaUrl);
+        yield { mediaUrl, label: stream.provider || void 0 };
       }
-    } catch {
-    }
-    yield* autoplayCapture(page, `${BASE}/embed2/${path}`, ctx);
+    };
+    const boot = await ctx.fetch(`${BASE}/api/boot/${path}?`, { headers: { ...headers2, "x-embed-parent": "" }, signal: AbortSignal.timeout(TIMEOUT_MS) }).then((r) => r.ok ? r.json() : null).catch(() => null);
+    const token = boot?.meta?.playbackToken;
+    const answers = token ? PROVIDERS.map(
+      (provider) => ctx.fetch(`${BASE}/api/source/${path}?token=${encodeURIComponent(token)}&provider=${provider}`, { headers: headers2, signal: AbortSignal.timeout(TIMEOUT_MS) }).then((r) => r.ok ? r.json() : null).catch(() => null)
+    ) : [];
+    if (boot?.meta?.evionUrl) yield* offer([{ url: boot.meta.evionUrl, type: "hls", provider: "Evion" }]);
+    yield* offer((await answers[0])?.streams);
+    yield* offer(boot?.meta?.warmStreams);
+    for (const answer of answers.slice(1)) yield* offer((await answer)?.streams);
   }
 };
 var movies_default = createScraper(sevenMoviesSite);
@@ -370,15 +308,37 @@ var cinezoSite = {
 var cinezo_default = createScraper(cinezoSite);
 
 // src/sites/bciney.mts
+var PLAYER2 = "https://player.bciney.to";
+var TIMEOUT_MS2 = 15e3;
+function jsonArrayAfter(text, key) {
+  const at = text.indexOf(key);
+  if (at < 0) return null;
+  const start = text.indexOf("[", at);
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') {
+      for (i++; i < text.length && text[i] !== '"'; i++) if (text[i] === "\\") i++;
+    } else if (c === "[" || c === "{") depth++;
+    else if ((c === "]" || c === "}") && --depth === 0) return JSON.parse(text.slice(start, i + 1));
+  }
+  return null;
+}
 var bcineySite = {
   id: "bciney",
   name: "bCine",
-  referrer: "https://player.bciney.to/",
+  referrer: `${PLAYER2}/`,
   maxQuality: "1080p",
-  async *captures(page, { match, season, episode }, ctx) {
-    const base = "https://player.bciney.to/embed";
-    const url = match.mediaType === "movie" ? `${base}/movie/${match.tmdbId}?autoplay=true` : `${base}/tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}?autoplay=true`;
-    yield* autoplayCapture(page, url, ctx, { isPlaylist: /^https:\/\/v\.bciney\.to\/v\?url=|\.m3u8(?:[?&#].*)?$/i });
+  async *httpCaptures({ match, season, episode }, ctx) {
+    const path = match.mediaType === "movie" ? `movie/${match.tmdbId}` : `tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
+    const response = await ctx.fetch(`${PLAYER2}/embed/${path}?autoplay=true`, { signal: AbortSignal.timeout(TIMEOUT_MS2) });
+    if (!response.ok) return;
+    const html = await response.text();
+    const flight = [...html.matchAll(/self\.__next_f\.push\(\[1,("(?:[^"\\]|\\.)*")\]\)/g)].map((m) => JSON.parse(m[1])).join("");
+    const servers = jsonArrayAfter(flight, '"initialServers":') ?? [];
+    for (const server of servers) {
+      if (server.url && (!server.type || server.type === "hls")) yield { mediaUrl: server.url, label: server.name };
+    }
   }
 };
 var bciney_default = createScraper(bcineySite);
@@ -387,11 +347,11 @@ var bciney_default = createScraper(bcineySite);
 var import_node_crypto = require("node:crypto");
 var BASE_URL = "https://cinejoy.pk";
 var API = "https://api.wing.st";
-var TIMEOUT_MS = 15e3;
+var TIMEOUT_MS3 = 15e3;
 var RESPONSE_AAD = new TextEncoder().encode("lumen-gate-v2\0");
 var crushModule;
 async function crush(fetchImpl) {
-  crushModule ??= fetchImpl(`${API}/crush.wasm`, { signal: AbortSignal.timeout(TIMEOUT_MS) }).then((r) => {
+  crushModule ??= fetchImpl(`${API}/crush.wasm`, { signal: AbortSignal.timeout(TIMEOUT_MS3) }).then((r) => {
     if (!r.ok) throw new Error(`crush.wasm ${r.status}`);
     return r.arrayBuffer();
   }).then(async (bytes) => {
@@ -406,7 +366,7 @@ async function crush(fetchImpl) {
   return (await WebAssembly.instantiate(module2, {})).exports;
 }
 async function listServers(fetchImpl) {
-  const response = await fetchImpl(`${API}/servers`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+  const response = await fetchImpl(`${API}/servers`, { signal: AbortSignal.timeout(TIMEOUT_MS3) });
   if (!response.ok) throw new Error(`Failed to list servers: ${response.status}`);
   const data = await response.json();
   return data.servers;
@@ -434,7 +394,7 @@ async function askServer(fetchImpl, path, payload) {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=UTF-8", Origin: BASE_URL, Referer: `${BASE_URL}/` },
     body,
-    signal: AbortSignal.timeout(TIMEOUT_MS)
+    signal: AbortSignal.timeout(TIMEOUT_MS3)
   });
   if (!response.ok) return [];
   const answer = new Uint8Array(await response.arrayBuffer());
@@ -469,29 +429,175 @@ var cinejoySite = {
 var cinejoy_default = createScraper(cinejoySite);
 
 // src/sites/flixer.mts
+var import_node_crypto2 = require("node:crypto");
+var BASE_URL2 = "https://flixer.gd";
+var API2 = "https://plsdontscrapemelove.flixer.gd";
+var TIMEOUT_MS4 = 15e3;
+var KEY_ROUNDS = 600;
+var NATO = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet", "kilo", "lima", "mike", "november", "oscar", "papa", "quebec", "romeo", "sierra", "tango", "uniform", "victor", "whiskey", "xray", "yankee", "zulu"];
+function newSession() {
+  return { apiKey: (0, import_node_crypto2.randomBytes)(32).toString("hex"), rootKeys: /* @__PURE__ */ new Map() };
+}
+function rootKey(session, hour) {
+  let key = session.rootKeys.get(hour);
+  if (!key) {
+    const salt = Buffer.alloc(16);
+    for (let i = 0; i < 16; i++) salt[i] = i + 1 ^ Number(BigInt(hour) >> BigInt(i & 7) & 0xffn);
+    key = (0, import_node_crypto2.createHash)("sha256").update(Buffer.concat([Buffer.from(session.apiKey), salt])).digest();
+    for (let i = 1; i < KEY_ROUNDS; i++) key = (0, import_node_crypto2.createHash)("sha256").update(key).digest();
+    session.rootKeys.set(hour, key);
+  }
+  return key;
+}
+async function serverTime(fetchImpl, session) {
+  session.clockSkew ??= fetchImpl(`${API2}/api/time?t=${Date.now()}`, { signal: AbortSignal.timeout(TIMEOUT_MS4) }).then(async (r) => (await r.json()).timestamp - Date.now() / 1e3).catch(() => 0);
+  return Math.floor(Date.now() / 1e3 + await session.clockSkew);
+}
+function decrypt(session, body, time) {
+  const data = Buffer.from(body.trim(), "base64");
+  for (const t of [time, time - 300, time + 300]) {
+    const key = (0, import_node_crypto2.createHmac)("sha256", rootKey(session, Math.floor(t / 3600))).update(`${Math.floor(t / 300)}${session.apiKey}`).digest();
+    const decipher = (0, import_node_crypto2.createDecipheriv)("aes-256-gcm", key, data.subarray(0, 12));
+    decipher.setAuthTag(data.subarray(data.length - 16));
+    try {
+      return JSON.parse(Buffer.concat([decipher.update(data.subarray(12, data.length - 16)), decipher.final()]).toString());
+    } catch {
+    }
+  }
+  throw new Error("flixer: could not decrypt answer");
+}
+async function ask(fetchImpl, session, path, server) {
+  const time = await serverTime(fetchImpl, session);
+  const nonce = (0, import_node_crypto2.randomBytes)(16).toString("base64").replace(/[/+=]/g, "").slice(0, 22);
+  const signature = (0, import_node_crypto2.createHmac)("sha256", session.apiKey).update(`${session.apiKey}:${time}:${nonce}:${path}`).digest("base64");
+  const response = await fetchImpl(`${API2}${path}`, {
+    headers: {
+      Accept: "text/plain",
+      Origin: BASE_URL2,
+      Referer: `${BASE_URL2}/`,
+      "X-Api-Key": session.apiKey,
+      "X-Request-Timestamp": String(time),
+      "X-Request-Nonce": nonce,
+      "X-Request-Signature": signature,
+      "X-Client-Fingerprint": "tomljm",
+      "X-Fingerprint-Lite": "b4f8a1fc72e905d63e",
+      ...server ? { "X-Only-Sources": "1", "X-Server": server } : { bW90aGFmYWth: "1" }
+    },
+    signal: AbortSignal.timeout(TIMEOUT_MS4)
+  });
+  if (!response.ok) return null;
+  return decrypt(session, await response.text(), time);
+}
+function sourceUrl(answer, server) {
+  const sources = answer?.sources;
+  if (!sources) return void 0;
+  if (Array.isArray(sources)) return sources.find((s) => s.server?.toLowerCase() === server && s.url)?.url ?? sources.find((s) => s.url)?.url;
+  return sources.file || sources.url || void 0;
+}
 var flixerSite = {
   id: "flixer",
   name: "Flixer",
-  referrer: "https://flixer.gd/",
+  referrer: `${BASE_URL2}/`,
   maxQuality: "1080p",
-  async *captures(page, { match, season, episode }, ctx) {
-    const base = "https://flixer.gd/watch";
-    const url = match.mediaType === "movie" ? `${base}/movie/${match.tmdbId}` : `${base}/tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
-    yield* autoplayCapture(page, url, ctx, { isPlaylist: /^https:\/\/serve\.dragonballzfans\.xyz\/proxy\?data=/i });
+  async *httpCaptures({ match, season, episode }, ctx) {
+    const path = match.mediaType === "movie" ? `/api/tmdb/movie/${match.tmdbId}/images` : `/api/tmdb/tv/${match.tmdbId}/season/${season ?? 1}/episode/${episode ?? 1}/images`;
+    const session = newSession();
+    const listed = Object.keys((await ask(ctx.fetch, session, path).catch(() => null))?.servers ?? {});
+    const servers = listed.length ? NATO.filter((s) => listed.includes(s)).concat(listed.filter((s) => !NATO.includes(s))) : NATO.slice(0, 8);
+    const answers = servers.map((server) => ask(ctx.fetch, session, path, server).catch(() => null));
+    for (const [i, server] of servers.entries()) {
+      const mediaUrl = sourceUrl(await answers[i], server);
+      if (mediaUrl) yield { mediaUrl, label: server };
+    }
   }
 };
 var flixer_default = createScraper(flixerSite);
 
 // src/sites/movy.mts
+var BASE_URL3 = "https://www.movy.sx";
+var API3 = "https://api.wecollege.net";
+var TIMEOUT_MS5 = 15e3;
+var PROVIDERS2 = ["miami", "boise", "atlanta", "paris"];
+var MAGIC = [109, 118, 109, 49];
+var GOLDEN = 2654435769;
+function fmix(h) {
+  h >>>= 0;
+  h ^= h >>> 16;
+  h = Math.imul(h, 2246822507) >>> 0;
+  h ^= h >>> 13;
+  h = Math.imul(h, 3266489909) >>> 0;
+  return (h ^ h >>> 16) >>> 0;
+}
+function rotl(x, n) {
+  x >>>= 0;
+  n &= 31;
+  return n === 0 ? x : (x << n | x >>> 32 - n) >>> 0;
+}
+function keystream(seed, mediaId, length) {
+  let fnv = 2166136261;
+  for (let i = 0; i < seed.length; i++) fnv = Math.imul(fnv ^ seed.charCodeAt(i), 16777619) >>> 0;
+  let n = fmix(fmix(fnv) ^ fmix(mediaId >>> 0 ^ GOLDEN)) >>> 0;
+  const state = new Array(61);
+  for (let i = 0; i < 8; i++) {
+    const slot = n % 61;
+    n = rotl(n + GOLDEN >>> 0, 7 + (7 & i));
+    state[slot] = (n ^ fmix(n)) >>> 0;
+    n = fmix(n + slot >>> 0);
+  }
+  let acc = fmix(2779096485 ^ n) >>> 0;
+  const out = new Uint8Array(length);
+  for (let pos = 0, step = 0; pos < length; step++) {
+    const slot = acc % 61;
+    const mask = slot in state ? -1 : 0;
+    const s = (state[slot] >>> 0 ^ Math.imul(GOLDEN, step + 1) >>> 0) >>> 0;
+    let b = ((acc ^ s) >>> 0 | (acc & s & mask) >>> 0) >>> 0;
+    b = (rotl(b + acc >>> 0, 31 & slot) ^ rotl(acc, 31 & Math.imul(slot, 7))) >>> 0;
+    acc = fmix(b + GOLDEN >>> 0);
+    state[slot] = acc;
+    for (let k = 0; k < 4 && pos < length; k++) out[pos++] = acc >>> 8 * k & 255;
+  }
+  return out;
+}
+function decrypt2(body, seed, mediaId) {
+  const data = Buffer.from(body.trim().replace(/-/g, "+").replace(/_/g, "/"), "base64");
+  const stream = keystream(seed, mediaId, data.length);
+  for (let i = 0; i < data.length; i++) data[i] ^= stream[i];
+  if (MAGIC.some((byte, i) => data[i] !== byte)) throw new Error("movy: bad seed");
+  return data.subarray(MAGIC.length).toString("utf8");
+}
+var headers = { Origin: BASE_URL3, Referer: `${BASE_URL3}/` };
+async function getSeed(fetchImpl, mediaId) {
+  const response = await fetchImpl(`${API3}/seed?mediaId=${mediaId}`, { headers, signal: AbortSignal.timeout(TIMEOUT_MS5) });
+  if (!response.ok) throw new Error(`movy seed ${response.status}`);
+  return (await response.json()).seed;
+}
 var movySite = {
   id: "movy",
   name: "Movy",
-  referrer: "https://movy.sx/",
+  referrer: `${BASE_URL3}/`,
   maxQuality: "1080p",
-  async *captures(page, { match, season, episode }, ctx) {
-    const base = "https://movy.sx";
-    const url = match.mediaType === "movie" ? `${base}/movie/${match.tmdbId}` : `${base}/tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
-    yield* autoplayCapture(page, url, ctx, { clickPlay: true });
+  async *httpCaptures({ match, season, episode }, ctx) {
+    let seed = await getSeed(ctx.fetch, match.tmdbId);
+    let seedAt = Date.now();
+    for (const provider of PROVIDERS2) {
+      if (Date.now() - seedAt > 25e3) {
+        seed = await getSeed(ctx.fetch, match.tmdbId);
+        seedAt = Date.now();
+      }
+      const params = new URLSearchParams({
+        title: encodeURIComponent(match.title),
+        mediaType: match.mediaType,
+        ...match.year ? { year: String(match.year) } : {},
+        episodeId: String(episode ?? 1),
+        seasonId: String(season ?? 1),
+        tmdbId: String(match.tmdbId),
+        enc: "2",
+        seed
+      });
+      const sources = await ctx.fetch(`${API3}/${provider}/sources?${params}`, { headers, signal: AbortSignal.timeout(TIMEOUT_MS5) }).then(async (r) => r.ok ? JSON.parse(decrypt2(await r.text(), seed, match.tmdbId)).sources : void 0).catch(() => void 0);
+      const mediaUrl = sources?.find((s) => s.url)?.url;
+      if (mediaUrl) yield { mediaUrl, label: provider };
+    }
   }
 };
 var movy_default = createScraper(movySite);
@@ -522,7 +628,7 @@ var moviesapiSite = {
 var moviesapi_default = createScraper(moviesapiSite);
 
 // src/sites/vidrock.mts
-var import_node_crypto2 = require("node:crypto");
+var import_node_crypto3 = require("node:crypto");
 var SITE2 = "https://vidrock.net/";
 var KEY_HEX = "7f3e9c2a8b5d1f4e6a9c3b7d2e5f8a1c4b6d9e2f5a8c1b4d7e9f2a5c8b1d4e7f";
 var SERVERS = ["Orion", "Luna"];
@@ -530,12 +636,12 @@ var API_TIMEOUT_MS3 = 2e4;
 var IV_BYTES = 12;
 var aesKey;
 function importKey() {
-  aesKey ??= import_node_crypto2.webcrypto.subtle.importKey("raw", Buffer.from(KEY_HEX, "hex"), "AES-GCM", false, ["decrypt"]);
+  aesKey ??= import_node_crypto3.webcrypto.subtle.importKey("raw", Buffer.from(KEY_HEX, "hex"), "AES-GCM", false, ["decrypt"]);
   return aesKey;
 }
-async function decrypt(blob) {
+async function decrypt3(blob) {
   const bytes = Buffer.from(blob.replace(/-/g, "+").replace(/_/g, "/"), "base64");
-  const plain = await import_node_crypto2.webcrypto.subtle.decrypt({ name: "AES-GCM", iv: bytes.subarray(0, IV_BYTES) }, await importKey(), bytes.subarray(IV_BYTES));
+  const plain = await import_node_crypto3.webcrypto.subtle.decrypt({ name: "AES-GCM", iv: bytes.subarray(0, IV_BYTES) }, await importKey(), bytes.subarray(IV_BYTES));
   return Buffer.from(plain).toString("utf8");
 }
 var vidrockSite = {
@@ -554,7 +660,7 @@ var vidrockSite = {
       if (!entry?.url || entry.type !== "hls") continue;
       let mediaUrl;
       try {
-        mediaUrl = entry.url.startsWith("http") ? entry.url : await decrypt(entry.url);
+        mediaUrl = entry.url.startsWith("http") ? entry.url : await decrypt3(entry.url);
       } catch {
         continue;
       }
@@ -600,19 +706,19 @@ var vixsrcSite = {
 var vixsrc_default = createScraper(vixsrcSite);
 
 // src/sites/atlantic.mts
-var import_node_crypto3 = require("node:crypto");
+var import_node_crypto4 = require("node:crypto");
 var SITE4 = "https://atlantic.st/";
-var API2 = "https://stream.hls.lol/helios";
+var API4 = "https://stream.hls.lol/helios";
 var KEY_HEX2 = "e4b8a1d6f2c9037b5a8e4d1c6f9b2085a7c3e9f6d1b4a8c2e5f7a0d3b6c9e2f5";
 var PREFIX = "ns_";
 var API_TIMEOUT_MS5 = 2e4;
 var IV_BYTES2 = 12;
 var aesKey2;
-async function decrypt2(value) {
+async function decrypt4(value) {
   if (!value.startsWith(PREFIX)) return value;
-  aesKey2 ??= import_node_crypto3.webcrypto.subtle.importKey("raw", Buffer.from(KEY_HEX2, "hex"), "AES-GCM", false, ["decrypt"]);
+  aesKey2 ??= import_node_crypto4.webcrypto.subtle.importKey("raw", Buffer.from(KEY_HEX2, "hex"), "AES-GCM", false, ["decrypt"]);
   const bytes = Buffer.from(value.slice(PREFIX.length), "hex");
-  const plain = await import_node_crypto3.webcrypto.subtle.decrypt({ name: "AES-GCM", iv: bytes.subarray(0, IV_BYTES2) }, await aesKey2, bytes.subarray(IV_BYTES2));
+  const plain = await import_node_crypto4.webcrypto.subtle.decrypt({ name: "AES-GCM", iv: bytes.subarray(0, IV_BYTES2) }, await aesKey2, bytes.subarray(IV_BYTES2));
   return Buffer.from(plain).toString("utf8");
 }
 var atlanticSite = {
@@ -623,13 +729,13 @@ var atlanticSite = {
   maxQuality: "1080p",
   async *httpCaptures({ match, season, episode }, ctx) {
     const query = match.mediaType === "movie" ? `tmdbId=${match.tmdbId}&type=movie` : `tmdbId=${match.tmdbId}&type=tv&seasonId=${season ?? 1}&episodeId=${episode ?? 1}`;
-    const response = await ctx.fetch(`${API2}?${query}`, { headers: { Referer: SITE4, Origin: SITE4.slice(0, -1) }, signal: AbortSignal.timeout(API_TIMEOUT_MS5) });
+    const response = await ctx.fetch(`${API4}?${query}`, { headers: { Referer: SITE4, Origin: SITE4.slice(0, -1) }, signal: AbortSignal.timeout(API_TIMEOUT_MS5) });
     if (!response.ok) return;
     const body = await response.json();
     for (const [name, entry] of Object.entries(body.sources ?? {})) {
       if (!entry?.url || entry.type && entry.type !== "hls") continue;
       try {
-        yield { mediaUrl: await decrypt2(entry.url), label: name };
+        yield { mediaUrl: await decrypt4(entry.url), label: name };
       } catch {
         continue;
       }
@@ -639,18 +745,18 @@ var atlanticSite = {
 var atlantic_default = createScraper(atlanticSite);
 
 // src/sites/vidlove.mts
-var PLAYER2 = "https://player.vidlove.cc/";
-var API3 = "https://api.vidlove.cc/";
+var PLAYER3 = "https://player.vidlove.cc/";
+var API5 = "https://api.vidlove.cc/";
 var API_TIMEOUT_MS6 = 2e4;
 var vidloveSite = {
   id: "vidlove",
   name: "Vidlove",
-  referrer: PLAYER2,
+  referrer: PLAYER3,
   maxQuality: "1080p",
   async *httpCaptures({ match, season, episode }, ctx) {
     const path = match.mediaType === "movie" ? `movie?id=${match.tmdbId}` : `tv?id=${match.tmdbId}&season=${season ?? 1}&episode=${episode ?? 1}`;
-    const response = await ctx.fetch(`${API3}${path}&mode=json&sources=vidapi`, {
-      headers: { Referer: PLAYER2, Origin: PLAYER2.slice(0, -1) },
+    const response = await ctx.fetch(`${API5}${path}&mode=json&sources=vidapi`, {
+      headers: { Referer: PLAYER3, Origin: PLAYER3.slice(0, -1) },
       signal: AbortSignal.timeout(API_TIMEOUT_MS6)
     });
     if (!response.ok) return;
@@ -667,8 +773,8 @@ var vidloveSite = {
 var vidlove_default = createScraper(vidloveSite);
 
 // src/sites/vidnest.mts
-var API4 = "https://new.vidnest.fun/";
-var PLAYER3 = "https://vidnest.fun/";
+var API6 = "https://new.vidnest.fun/";
+var PLAYER4 = "https://vidnest.fun/";
 var MEDIA_REFERRER = "https://nextgencloudfabric.com/";
 var ALPHABET = "RB0fpH8ZEyVLkv7c2i6MAJ5u3IKFDxlS1NTsnGaqmXYdUrtzjwObCgQP94hoeW+/=";
 var API_TIMEOUT_MS7 = 2e4;
@@ -692,8 +798,8 @@ var vidnestSite = {
   maxQuality: "1080p",
   async *httpCaptures({ match, season, episode }, ctx) {
     const path = match.mediaType === "movie" ? `movie/${match.tmdbId}` : `tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
-    const response = await ctx.fetch(`${API4}nextgencloudfabric/${path}`, {
-      headers: { Referer: PLAYER3, Origin: PLAYER3.slice(0, -1) },
+    const response = await ctx.fetch(`${API6}nextgencloudfabric/${path}`, {
+      headers: { Referer: PLAYER4, Origin: PLAYER4.slice(0, -1) },
       signal: AbortSignal.timeout(API_TIMEOUT_MS7)
     });
     if (!response.ok) return;
@@ -711,7 +817,7 @@ var vidnestSite = {
 var vidnest_default = createScraper(vidnestSite);
 
 // src/sites/rivestream.mts
-var API5 = "https://scrapper.rivestream.app/api/provider";
+var API7 = "https://scrapper.rivestream.app/api/provider";
 var API_TIMEOUT_MS8 = 2e4;
 var rivestreamSite = {
   id: "rivestream",
@@ -721,7 +827,7 @@ var rivestreamSite = {
   maxQuality: "4K",
   async *httpCaptures({ match, season, episode }, ctx) {
     const query = match.mediaType === "movie" ? `id=${match.tmdbId}` : `id=${match.tmdbId}&season=${season ?? 1}&episode=${episode ?? 1}`;
-    const response = await ctx.fetch(`${API5}?provider=vanguard&${query}`, { signal: AbortSignal.timeout(API_TIMEOUT_MS8) });
+    const response = await ctx.fetch(`${API7}?provider=vanguard&${query}`, { signal: AbortSignal.timeout(API_TIMEOUT_MS8) });
     if (!response.ok) return;
     const body = await response.json();
     for (const source of body.data?.sources ?? []) {
@@ -806,16 +912,16 @@ var lookmovieSite = {
 var lookmovie_default = createScraper(lookmovieSite);
 
 // src/sites/aetherlul.mts
-var API6 = "https://lul.aether.cx/";
+var API8 = "https://lul.aether.cx/";
 var API_TIMEOUT_MS10 = 2e4;
 var aetherlulSite = {
   id: "aetherlul",
   name: "Aether",
-  referrer: API6,
+  referrer: API8,
   maxQuality: "1080p",
   async *httpCaptures({ match, season, episode }, ctx) {
     const path = match.mediaType === "movie" ? `movie/${match.tmdbId}` : `tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
-    const response = await ctx.fetch(`${API6}${path}`, { signal: AbortSignal.timeout(API_TIMEOUT_MS10) });
+    const response = await ctx.fetch(`${API8}${path}`, { signal: AbortSignal.timeout(API_TIMEOUT_MS10) });
     if (!response.ok) return;
     const body = await response.json();
     if (body.stream) yield { mediaUrl: body.stream, label: "Aether" };
@@ -824,12 +930,12 @@ var aetherlulSite = {
 var aetherlul_default = createScraper(aetherlulSite);
 
 // src/cinesrc.mts
-var import_node_crypto4 = require("node:crypto");
-var subtle = import_node_crypto4.webcrypto.subtle;
+var import_node_crypto5 = require("node:crypto");
+var subtle = import_node_crypto5.webcrypto.subtle;
 var CINESRC_ORIGIN = "https://cinesrc.st";
 var UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
 var PROTOCOL = "csp3-20260613-b";
-var TIMEOUT_MS2 = 15e3;
+var TIMEOUT_MS6 = 15e3;
 var FIELD = [
   "f78e3f38-5436-4d74-98e1-3ff89c437531",
   "14f36d78-cd51-4c30-a14f-c9837603f11a",
@@ -879,33 +985,33 @@ var C2_FP = {
 var b64 = (b) => Buffer.from(b).toString("base64");
 var b64u = (b) => Buffer.from(b).toString("base64url");
 var reverse = (s) => s.split("").reverse().join("");
-var rotl = (x, n) => (x << n | x >>> 32 - n) >>> 0;
+var rotl2 = (x, n) => (x << n | x >>> 32 - n) >>> 0;
 function donutHash(input) {
   const bytes = new TextEncoder().encode(input);
   let a = (3266489909 ^ bytes.length) >>> 0, b = 50595078, c = 67372036, d = 2654435769, e = 2246822507;
   for (let i = 0; i < bytes.length; i++) {
     const ch = bytes[i];
-    b = rotl((b ^ ch + i + a >>> 0) >>> 0, 5) + c >>> 0;
-    const c1 = rotl(c + (b >>> 16 ^ ch) + 668265261 >>> 0, 7);
-    const y = rotl((c1 ^ ch << (i & 3) * 8 >>> 0) >>> 0, 11) + e >>> 0;
-    const e1 = rotl(e + y + ((b ^ ch) >>> 0) >>> 0, 13);
+    b = rotl2((b ^ ch + i + a >>> 0) >>> 0, 5) + c >>> 0;
+    const c1 = rotl2(c + (b >>> 16 ^ ch) + 668265261 >>> 0, 7);
+    const y = rotl2((c1 ^ ch << (i & 3) * 8 >>> 0) >>> 0, 11) + e >>> 0;
+    const e1 = rotl2(e + y + ((b ^ ch) >>> 0) >>> 0, 13);
     c = (c1 ^ d) >>> 0;
     d = y;
     e = (e1 ^ a) >>> 0;
-    a = rotl((e1 ^ ch + Math.imul(i + 1, 73244475) >>> 0) >>> 0, 17);
+    a = rotl2((e1 ^ ch + Math.imul(i + 1, 73244475) >>> 0) >>> 0, 17);
   }
   for (let r = 0; r < 12; r++) {
-    b = (rotl(b + a + Math.imul(r + 1, 2654435761) >>> 0, 3) ^ c) >>> 0;
-    c = rotl((c ^ d ^ Math.imul(r + 3, 2246822519)) >>> 0, 9) + e >>> 0;
-    d = (rotl(d + b + Math.imul(r + 5, 3266489917) >>> 0, 15) ^ a) >>> 0;
-    e = rotl((e ^ c ^ Math.imul(r + 7, 668265263)) >>> 0, 21) + b >>> 0;
-    a = (rotl(a + d + e + r >>> 0, 27) ^ b) >>> 0;
+    b = (rotl2(b + a + Math.imul(r + 1, 2654435761) >>> 0, 3) ^ c) >>> 0;
+    c = rotl2((c ^ d ^ Math.imul(r + 3, 2246822519)) >>> 0, 9) + e >>> 0;
+    d = (rotl2(d + b + Math.imul(r + 5, 3266489917) >>> 0, 15) ^ a) >>> 0;
+    e = rotl2((e ^ c ^ Math.imul(r + 7, 668265263)) >>> 0, 21) + b >>> 0;
+    a = (rotl2(a + d + e + r >>> 0, 27) ^ b) >>> 0;
   }
   return [b, c, d, e, a].map((v) => v.toString(16).padStart(8, "0")).join("");
 }
 var powModule;
 async function solveIssuePow(fetch, work) {
-  powModule ??= fetch(`${CINESRC_ORIGIN}/pow-v3.wasm`, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(TIMEOUT_MS2) }).then((r) => {
+  powModule ??= fetch(`${CINESRC_ORIGIN}/pow-v3.wasm`, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(TIMEOUT_MS6) }).then((r) => {
     if (!r.ok) throw new Error(`pow-v3.wasm ${r.status}`);
     return r.arrayBuffer();
   }).then(async (bytes) => {
@@ -930,15 +1036,15 @@ async function solveIssuePow(fetch, work) {
 function solveFingerprintPow(salt, target) {
   for (let n = 0; n < 1 << 24; n++) {
     const x = n.toString(16).padStart(5, "0");
-    if ((0, import_node_crypto4.createHash)("sha256").update(salt + x).digest("hex") === target) return x;
+    if ((0, import_node_crypto5.createHash)("sha256").update(salt + x).digest("hex") === target) return x;
   }
   throw new Error("fingerprint pow unsolved");
 }
 async function seal(spki, plaintext, context) {
-  const raw = new Uint8Array((0, import_node_crypto4.randomBytes)(32));
+  const raw = new Uint8Array((0, import_node_crypto5.randomBytes)(32));
   const aesKey3 = await subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt"]);
   const rsaKey = await subtle.importKey("spki", spki, { name: "RSA-OAEP", hash: "SHA-256" }, false, ["encrypt"]);
-  const iv = new Uint8Array((0, import_node_crypto4.randomBytes)(12));
+  const iv = new Uint8Array((0, import_node_crypto5.randomBytes)(12));
   const ct = new Uint8Array(await subtle.encrypt({ name: "AES-GCM", iv, ...context ? { additionalData: context } : {} }, aesKey3, plaintext(raw)));
   const wrapped = new Uint8Array(await subtle.encrypt({ name: "RSA-OAEP", ...context ? { label: context } : {} }, rsaKey, raw));
   return { wrapped, iv, ct };
@@ -965,7 +1071,7 @@ async function buildC2(pack, now) {
   const sealed = await seal(spki, () => new TextEncoder().encode(JSON.stringify(body)));
   return `c2~${b64u(sealed.wrapped)}~${b64u(sealed.iv)}~${b64u(sealed.ct)}`;
 }
-var decoy = () => ["_z" + Math.floor(Math.random() * 1296).toString(36).padStart(2, "0"), b64((0, import_node_crypto4.randomBytes)(4))];
+var decoy = () => ["_z" + Math.floor(Math.random() * 1296).toString(36).padStart(2, "0"), b64((0, import_node_crypto5.randomBytes)(4))];
 async function buildS1(opts) {
   const { issue, proof, now, path, clientPub, pem } = opts;
   const fields = [
@@ -988,7 +1094,7 @@ async function buildS1(opts) {
     FIELD[7],
     now,
     FIELD[8],
-    (0, import_node_crypto4.randomBytes)(8).toString("hex"),
+    (0, import_node_crypto5.randomBytes)(8).toString("hex"),
     ...decoy(),
     FIELD[9],
     UA,
@@ -998,16 +1104,16 @@ async function buildS1(opts) {
     S1_FP,
     ...decoy(),
     FIELD[12],
-    b64((0, import_node_crypto4.randomBytes)(16)),
+    b64((0, import_node_crypto5.randomBytes)(16)),
     FIELD[13],
-    (0, import_node_crypto4.randomBytes)(32).toString("hex"),
+    (0, import_node_crypto5.randomBytes)(32).toString("hex"),
     FIELD[14],
     b64(clientPub),
     ...decoy(),
     FIELD[15],
     1,
     FIELD[16],
-    b64((0, import_node_crypto4.randomBytes)(18))
+    b64((0, import_node_crypto5.randomBytes)(18))
   ];
   const context = new TextEncoder().encode(`cinesrc-challenge|${PROTOCOL}|s1`);
   const spki = Buffer.from(pem.replace(/-----[^-]+-----|\s/g, ""), "base64");
@@ -1024,11 +1130,11 @@ var actionsRefreshedAt = 0;
 async function refreshActions(fetch, path) {
   if (Date.now() - actionsRefreshedAt < 6e4) return false;
   actionsRefreshedAt = Date.now();
-  const html = await (await fetch(CINESRC_ORIGIN + path, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(TIMEOUT_MS2) })).text();
+  const html = await (await fetch(CINESRC_ORIGIN + path, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(TIMEOUT_MS6) })).text();
   const chunks = [...new Set(html.match(/\/_next\/static\/chunks\/[\w.-]+\.js/g) ?? [])];
   const found = {};
   await Promise.all(chunks.map(async (chunk) => {
-    const js = await (await fetch(CINESRC_ORIGIN + chunk, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(TIMEOUT_MS2) })).text().catch(() => "");
+    const js = await (await fetch(CINESRC_ORIGIN + chunk, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(TIMEOUT_MS6) })).text().catch(() => "");
     for (const m of js.matchAll(/createServerReference\)\("([0-9a-f]{40,})",[^)]*?"(getStream|getProviderList)"\)/g)) found[m[2]] = m[1];
   }));
   if (!found.getStream) return false;
@@ -1040,7 +1146,7 @@ async function callAction(fetch, path, id, args) {
     method: "POST",
     headers: { "user-agent": UA, referer: `${CINESRC_ORIGIN}/`, origin: CINESRC_ORIGIN, accept: "text/x-component", "content-type": "text/plain;charset=UTF-8", "next-action": id },
     body: JSON.stringify(args),
-    signal: AbortSignal.timeout(TIMEOUT_MS2)
+    signal: AbortSignal.timeout(TIMEOUT_MS6)
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`action ${res.status}`);
@@ -1064,7 +1170,7 @@ async function getStream(fetch, target, provider) {
     const res = await fetch(CINESRC_ORIGIN + p, {
       ...init,
       headers: { "user-agent": UA, referer: `${CINESRC_ORIGIN}/`, origin: CINESRC_ORIGIN, cookie: [...cookies].map(([k, v]) => `${k}=${v}`).join("; "), ...init.headers },
-      signal: AbortSignal.timeout(TIMEOUT_MS2)
+      signal: AbortSignal.timeout(TIMEOUT_MS6)
     });
     for (const c of res.headers.getSetCookie?.() ?? []) {
       const kv = c.split(";")[0] ?? "";
@@ -1078,7 +1184,7 @@ async function getStream(fetch, target, provider) {
   const xq = b64u(new TextEncoder().encode(query));
   const boot = await api("/api/c/bootstrap", { method: "POST", headers: { "x-cs-q": xq } });
   cookies.set("cs_ac", boot.r);
-  const pbCookie = "cs_pb_" + (0, import_node_crypto4.createHash)("sha256").update(query).digest("hex").slice(0, 16);
+  const pbCookie = "cs_pb_" + (0, import_node_crypto5.createHash)("sha256").update(query).digest("hex").slice(0, 16);
   cookies.set(pbCookie, boot.p);
   const issue = await api("/api/c/issue", { headers: { "x-cs-q": xq, "x-cs-p": boot.p, "x-cs-r": boot.r } });
   cookies.delete(pbCookie);
@@ -1137,5 +1243,5 @@ var shuttletvSite = {
 var shuttletv_default = createScraper(shuttletvSite);
 
 // src/index.mts
-var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default].map((scraper) => ({ ...scraper, version: "1.18.0" }));
+var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default].map((scraper) => ({ ...scraper, version: "1.19.0" }));
 var index_default = scrapers;
