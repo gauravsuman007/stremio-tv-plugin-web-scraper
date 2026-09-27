@@ -30,6 +30,7 @@ interface TmdbMultiResult {
     name?: string;
     release_date?: string;
     first_air_date?: string;
+    original_language?: string;
 }
 
 export interface TmdbMatch {
@@ -40,6 +41,8 @@ export interface TmdbMatch {
      *  is what a result's display name is actually built from. */
     title: string;
     year: number | null;
+    /** ISO 639-1 code of the title's original language ("en"), when TMDB states it. */
+    originalLanguage?: string;
 }
 
 async function tmdbSearch(fetchImpl: ScraperContext["fetch"], query: string): Promise<TmdbMatch[]> {
@@ -60,7 +63,7 @@ async function tmdbSearch(fetchImpl: ScraperContext["fetch"], query: string): Pr
         const dateStr = r.media_type === "movie" ? r.release_date : r.first_air_date;
         const year = dateStr ? Number.parseInt(dateStr.slice(0, 4), 10) : null;
         const title = (r.media_type === "movie" ? r.title : r.name) || query;
-        results.push({ tmdbId: r.id, mediaType: r.media_type, title, year: Number.isFinite(year) ? year : null });
+        results.push({ tmdbId: r.id, mediaType: r.media_type, title, year: Number.isFinite(year) ? year : null, originalLanguage: r.original_language });
     }
     return results;
 }
@@ -86,13 +89,13 @@ async function tmdbFindByImdbId(fetchImpl: ScraperContext["fetch"], imdbId: stri
     const movie = data.movie_results[0];
     if (movie) {
         const year = movie.release_date ? Number.parseInt(movie.release_date.slice(0, 4), 10) : null;
-        return { tmdbId: movie.id, mediaType: "movie", title: movie.title || imdbId, year: Number.isFinite(year) ? year : null };
+        return { tmdbId: movie.id, mediaType: "movie", title: movie.title || imdbId, year: Number.isFinite(year) ? year : null, originalLanguage: movie.original_language };
     }
 
     const tv = data.tv_results[0];
     if (tv) {
         const year = tv.first_air_date ? Number.parseInt(tv.first_air_date.slice(0, 4), 10) : null;
-        return { tmdbId: tv.id, mediaType: "tv", title: tv.name || imdbId, year: Number.isFinite(year) ? year : null };
+        return { tmdbId: tv.id, mediaType: "tv", title: tv.name || imdbId, year: Number.isFinite(year) ? year : null, originalLanguage: tv.original_language };
     }
 
     return null;
@@ -128,11 +131,46 @@ function mediaHeaders(site: { referrer: string; headers?: Record<string, string>
     return { Referer: site.referrer, ...site.headers };
 }
 
+interface Variant {
+    resolution: string | null;
+    bandwidth: number | null;
+    url: string;
+    /** The master's `#EXT-X-MEDIA` audio renditions, by language name. */
+    audio?: string[];
+}
+
+const languageNames = new Intl.DisplayNames(["en"], { type: "language" });
+
+/** "fr", "fre", "French" or "Français" as a display name; an unknown code is left as written. */
+export function languageName(code: string): string {
+    const clean = code.trim();
+    if (!/^[a-z]{2,3}(-[a-z0-9]+)?$/i.test(clean)) return clean;
+    try {
+        const name = languageNames.of(clean);
+        return name && name !== clean ? name : clean;
+    } catch {
+        return clean;
+    }
+}
+
+/** The audio renditions a master lists, by LANGUAGE (else NAME), deduplicated. */
+function audioLanguages(master: string): string[] {
+    const names: string[] = [];
+    for (const line of master.split(/\r?\n/)) {
+        if (!line.startsWith("#EXT-X-MEDIA:") || !/TYPE=AUDIO/.test(line)) continue;
+        const language = /LANGUAGE="([^"]+)"/.exec(line)?.[1];
+        const name = /NAME="([^"]+)"/.exec(line)?.[1];
+        const label = language ? languageName(language) : name && !/^(audio|default|main|stereo|und)\b/i.test(name) ? name : undefined;
+        if (label && !names.includes(label)) names.push(label);
+    }
+    return names;
+}
+
 async function expandMasterPlaylist(
     fetchImpl: ScraperContext["fetch"],
     masterUrl: string,
     headers: Record<string, string>
-): Promise<{ resolution: string | null; bandwidth: number | null; url: string }[]> {
+): Promise<Variant[]> {
     if (DIRECT_FILE_RE.test(masterUrl)) {
         const response = await fetchImpl(masterUrl, { headers: { ...headers, Range: "bytes=0-1023" } });
         if (!response.ok) throw new Error(`direct file not fetchable: ${response.status}`);
@@ -147,7 +185,8 @@ async function expandMasterPlaylist(
     if (!text.includes("#EXT-X-STREAM-INF")) return [{ resolution: null, bandwidth: null, url: masterUrl }];
 
     const lines = text.split(/\r?\n/);
-    const variants: { resolution: string | null; bandwidth: number | null; url: string }[] = [];
+    const variants: Variant[] = [];
+    const audio = audioLanguages(text);
 
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
@@ -161,7 +200,8 @@ async function expandMasterPlaylist(
         variants.push({
             resolution: resolutionMatch?.[1] ?? null,
             bandwidth: bandwidthMatch?.[1] ? Number.parseInt(bandwidthMatch[1], 10) : null,
-            url: new URL(uriLine, masterUrl).toString()
+            url: new URL(uriLine, masterUrl).toString(),
+            audio
         });
     }
 
@@ -207,6 +247,8 @@ export interface Capture {
      *  sit on different CDNs; otherwise the site's `referrer`/`headers`. */
     referrer?: string;
     headers?: Record<string, string>;
+    /** The audio language(s) the site says this stream carries (display names or ISO codes). */
+    audio?: string[];
 }
 
 export interface SiteBase {
@@ -234,9 +276,12 @@ export interface HttpSite extends SiteBase {
     httpCaptures(target: SiteTarget, ctx: ScraperContext): AsyncGenerator<Capture>;
 }
 
-/** The resolution class of a variant: 1920x800 (a widescreen film) is 1080p, not 800p, so it is the height a 16:9 frame of that width would have, when that is taller. */
+/** The resolution class of a variant: 1920x800 (a widescreen film) is 1080p, not 800p, so it is the height a 16:9 frame of that width would have, when that is taller -- unless the height is itself a standard one. */
 function variantHeight(variant: { resolution: string | null }): number {
     const [width = 0, height = 0] = (variant.resolution ?? "").split("x").map((n) => Number.parseInt(n, 10) || 0);
+    // A height that already is a class stays one: 2586x1080 (a 2.39:1 film) is 1080p, not 1440p.
+    const exact = STANDARD_HEIGHTS.find((standard) => Math.abs(height - standard) <= standard * 0.05);
+    if (exact) return exact;
     const tall = Math.max(height, Math.round((width * 9) / 16));
     return STANDARD_HEIGHTS.find((standard) => tall >= standard * 0.95) ?? tall;
 }
@@ -268,7 +313,8 @@ interface Candidate {
  * fetches, its best variant is a finished playlist longer than a stub. Returns
  * the link to hand out, or null for a dead/blocked/decoy mirror.
  */
-async function verifyCapture(base: SiteBase, capture: Capture, displayTitle: string, ctx: ScraperContext): Promise<Candidate | null> {
+async function verifyCapture(base: SiteBase, capture: Capture, match: TmdbMatch, ctx: ScraperContext): Promise<Candidate | null> {
+    const displayTitle = displayName(match);
     const { mediaUrl, label } = capture;
     const site = { ...base, referrer: capture.referrer ?? base.referrer, headers: capture.headers ?? base.headers };
     const variants = await expandMasterPlaylist(ctx.fetch, mediaUrl, mediaHeaders(site)).catch(() => null);
@@ -281,7 +327,17 @@ async function verifyCapture(base: SiteBase, capture: Capture, displayTitle: str
     }
 
     const height = Math.max(...variants.map(variantHeight)) || heightFromUrl(mediaUrl);
-    const score = height * 1e9 + Math.max(...variants.map((v) => v.bandwidth ?? 0));
+    /*
+        AUDIO: what the site says, else what the master lists, else the
+        title's original language -- marked as assumed, since a site that
+        states nothing almost always serves the original, but not always.
+    */
+    const original = match.originalLanguage ? languageName(match.originalLanguage) : undefined;
+    const stated = (capture.audio?.length ? capture.audio : top.audio ?? []).map(languageName).sort((a, b) => Number(b === original) - Number(a === original));
+    const audio = stated.length ? stated : original ? [`${original} (assumed)`] : [];
+    // At equal resolution, a dub ranks below the original.
+    const dubbed = Boolean(original && stated.length && !stated.includes(original));
+    const score = height * 1e9 + Math.max(...variants.map((v) => v.bandwidth ?? 0)) - (dubbed ? 5e8 : 0);
 
     /*
         A REAL MASTER, WITH SOMETHING TO PICK BETWEEN, GOES THROUGH WHOLE --
@@ -309,7 +365,9 @@ async function verifyCapture(base: SiteBase, capture: Capture, displayTitle: str
             title: displayTitle,
             referrer: site.referrer,
             ...(site.headers && Object.keys(site.headers).length ? { headers: site.headers } : {}),
-            ...(height ? { height } : {})
+            ...(height ? { height } : {}),
+            ...(audio.length ? { audio } : {}),
+            ...(label ? { server: label } : {})
         }
     };
 }
@@ -326,7 +384,7 @@ async function verifyCapture(base: SiteBase, capture: Capture, displayTitle: str
 function collectCandidates(
     site: SiteBase,
     captures: AsyncGenerator<Capture>,
-    displayTitle: string,
+    match: TmdbMatch,
     ctx: ScraperContext,
     deadlineMs: number
 ): Promise<{ candidates: Candidate[]; complete: boolean }> {
@@ -361,7 +419,7 @@ function collectCandidates(
                     const step = await captures.next();
                     if (step.done || finished) break;
                     pending++;
-                    void verifyCapture(site, step.value, displayTitle, ctx)
+                    void verifyCapture(site, step.value, match, ctx)
                         .catch(() => null)
                         .then((candidate) => {
                             pending--;
@@ -380,7 +438,7 @@ function collectCandidates(
 
 /** Used by ./browser.mts's research scrapers: the best verified link, or null. */
 export async function pickBestLink(site: SiteBase, captures: AsyncGenerator<Capture>, match: TmdbMatch, ctx: ScraperContext): Promise<WebLink | null> {
-    const { candidates } = await collectCandidates(site, captures, displayName(match), ctx, RESOLVE_DEADLINE_MS);
+    const { candidates } = await collectCandidates(site, captures, match, ctx, RESOLVE_DEADLINE_MS);
     return candidates[0]?.link ?? null;
 }
 
@@ -430,9 +488,24 @@ async function candidatesFor(site: HttpSite, query: WebLinkQuery, ctx: ScraperCo
     const match = await resolveTmdbMatch(query, ctx.fetch);
     if (!match) return null;
     const target: SiteTarget = { match, season: query.season, episode: query.episode };
-    const result = await collectCandidates(site, site.httpCaptures(target, ctx), displayName(match), ctx, deadlineMs);
+    const result = await collectCandidates(site, site.httpCaptures(target, ctx), match, ctx, deadlineMs);
     rememberLinks(site, result.candidates, query);
+    if (result.complete) results.set(linkKey(site.id, query), { at: Date.now(), found: { match, ...result } });
     return { match, ...result };
+}
+
+/*
+    A FINISHED SEARCH IS KEPT, so going back to the list (or opening the
+    title again) shows the same rows at once instead of scraping again.
+    Only the list is reused: playing a row still checks its link and
+    resolves afresh when it has expired (`resolveSite`).
+*/
+const results = new Map<string, { at: number; found: { match: TmdbMatch; candidates: Candidate[]; complete: boolean } }>();
+
+function recentResult(site: SiteBase, query: WebLinkQuery) {
+    const now = Date.now();
+    for (const [key, entry] of results) if (now - entry.at > LINK_MAX_AGE_MS) results.delete(key);
+    return results.get(linkKey(site.id, query))?.found;
 }
 
 /*
@@ -490,7 +563,7 @@ async function searchSite(site: HttpSite, query: WebLinkQuery, ctx: ScraperConte
     if (site.available && !(await site.available(ctx).catch(() => false))) return [];
 
     const budgetMs = Math.max(1_000, ctx.budgetMs - SEARCH_MARGIN_MS);
-    const found = await Promise.race([sharedCandidates(site, query, ctx), new Promise<"late">((r) => setTimeout(() => r("late"), budgetMs))]);
+    const found = recentResult(site, query) ?? await Promise.race([sharedCandidates(site, query, ctx), new Promise<"late">((r) => setTimeout(() => r("late"), budgetMs))]);
 
     if (found === "late") {
         const match = await resolveTmdbMatch(query, ctx.fetch).catch(() => null);
@@ -507,7 +580,16 @@ async function searchSite(site: HttpSite, query: WebLinkQuery, ctx: ScraperConte
         const resolveId = candidate.label ? `${site.id}~${candidate.label}` : site.id;
         if (seen.has(resolveId) || seen.has(candidate.link.url)) continue;
         seen.add(resolveId).add(candidate.link.url);
-        rows.push({ url: "", resolveId, resolveKind: "hls", title, quality: candidate.link.quality, ...(candidate.height ? { height: candidate.height } : {}) });
+        rows.push({
+            url: "",
+            resolveId,
+            resolveKind: "hls",
+            title,
+            quality: candidate.link.quality,
+            ...(candidate.height ? { height: candidate.height } : {}),
+            ...(candidate.link.audio ? { audio: candidate.link.audio } : {}),
+            ...(candidate.label ? { server: candidate.label } : {})
+        });
         if (rows.length >= MAX_ROWS_PER_SITE) break;
     }
     return rows;

@@ -51,6 +51,12 @@ Read this if you are the app playing a returned `WebLink` (stremio-tv's web-link
 - 7Movies serves HEVC (1080p): the player needs HEVC support. The others are H.264.
 - Flixer and Movy hand back a single playlist without a stated resolution on some titles.
 
+**Server and audio (1.22.0, needs web-links >= 0.13.0).** Every row carries `server` (the site's mirror name) and `audio`: the languages the site states for that stream (7Movies' moviebox lists each dub as its own stream), else the master's `#EXT-X-MEDIA:TYPE=AUDIO` renditions, else the title's TMDB original language marked `(assumed)`. At equal resolution a dub ranks below the original.
+
+**Search results are reused.** A finished search for a site and title is kept up to 6h (`results` in `src/shared.mts`), so listing the title again is instant; a placeholder row's background resolve fills it too. Only the list is reused -- playing still re-checks the link.
+
+**Resolution class.** A variant's class is its height when that height is itself standard (2586x1080 is 1080p, not 1440p), otherwise the 16:9 height of its width (1920x800 is 1080p).
+
 **Failure is normal, and empty.** `resolve()` returns `null` when no server on the site plays. Reasons seen: title missing on the site, upstream 5xx (Cinezo's proxy for some titles), a decoy stub. The scrapers reject any finished playlist under 5 minutes and any playlist that fails to fetch, so a returned link has passed a real fetch, but check again when playing. Try the other scrapers' rows instead of retrying.
 
 **Excluded on purpose.** Sites whose CDN rejects non-browser TLS clients (watch.spencerdevs.xyz) or encrypt streams behind bot detection (meowtv.ru) are not scraped; DASH-only sources (moviebox/zxcstream, Cinezo's `zendaya`) can't be carried by `resolveKind`. A Turnstile/Cloudflare challenge on its own is no longer an automatic reject -- see "Getting past Cloudflare/Turnstile with FlareSolverr" below.

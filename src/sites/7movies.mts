@@ -13,7 +13,9 @@ import { createScraper, type Capture, type HttpSite } from "../shared.mts";
  * `#EXT-X-MEDIA` audio in one playlist) the player leads with it. Then it
  * cascades moviebox ("Orion", HEVC 1080p with a separate audio group,
  * `/api/mb/<id>/master.m3u8`), vaplayer ("Earth"), vidlove ("Star"), vidrock
- * ("Atlas"); moviebox is skipped by browsers without HEVC.
+ * ("Atlas"); moviebox is skipped by browsers without HEVC. moviebox answers
+ * one stream per audio language ("Orion · Original", "Orion · French", ...),
+ * so the name is the row's label and its audio.
  *
  * WHICH PROVIDER ANSWERS DEPENDS ON THE CALLER'S IP: from the server's
  * datacentre address the boot's warm streams are sometimes all there is, so
@@ -28,6 +30,8 @@ interface Stream {
     url?: string;
     type?: string;
     provider?: string;
+    /** e.g. "Orion · French": moviebox lists each dub as its own stream. */
+    name?: string;
 }
 
 const sevenMoviesSite: HttpSite = {
@@ -46,7 +50,13 @@ const sevenMoviesSite: HttpSite = {
                 const mediaUrl = new URL(raw, BASE).href;
                 if (seen.has(mediaUrl)) continue;
                 seen.add(mediaUrl);
-                yield { mediaUrl, label: stream.provider || undefined };
+                // The name, not the provider: moviebox's dubs all share "Orion" and would collapse into one row.
+                const language = /\u00b7\s*(.+)$/.exec(stream.name ?? "")?.[1]?.trim();
+                yield {
+                    mediaUrl,
+                    label: stream.name || stream.provider || undefined,
+                    ...(language && !/^original$/i.test(language) ? { audio: [language] } : {})
+                };
             }
         };
 
