@@ -384,23 +384,67 @@ var bcineySite = {
 var bciney_default = createScraper(bcineySite);
 
 // src/sites/cinejoy.mts
+var import_node_crypto = require("node:crypto");
 var BASE_URL = "https://cinejoy.pk";
-var DEFAULT_PER_SERVER_TIMEOUT_MS = 2e4;
+var API = "https://api.wing.st";
+var TIMEOUT_MS = 15e3;
+var RESPONSE_AAD = new TextEncoder().encode("lumen-gate-v2\0");
+var crushModule;
+async function crush(fetchImpl) {
+  crushModule ??= fetchImpl(`${API}/crush.wasm`, { signal: AbortSignal.timeout(TIMEOUT_MS) }).then((r) => {
+    if (!r.ok) throw new Error(`crush.wasm ${r.status}`);
+    return r.arrayBuffer();
+  }).then(async (bytes) => {
+    const module3 = await WebAssembly.compile(bytes);
+    if (WebAssembly.Module.imports(module3).length) throw new Error("crush.wasm now has imports");
+    return module3;
+  });
+  const module2 = await crushModule.catch((err) => {
+    crushModule = void 0;
+    throw err;
+  });
+  return (await WebAssembly.instantiate(module2, {})).exports;
+}
 async function listServers(fetchImpl) {
-  const response = await fetchImpl("https://api.wing.st/servers");
+  const response = await fetchImpl(`${API}/servers`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
   if (!response.ok) throw new Error(`Failed to list servers: ${response.status}`);
   const data = await response.json();
   return data.servers;
 }
-function watchUrl(tmdbId, mediaType, season, episode) {
-  if (mediaType === "movie") return `${BASE_URL}/watch/movie/${tmdbId}`;
-  return `${BASE_URL}/watch/tv/${tmdbId}/${season ?? 1}/${episode ?? 1}`;
-}
-function selectServerAndCapture(page, serverName, timeoutMs) {
-  return captureMediaUrl(page, timeoutMs, async () => {
-    await page.getByRole("button", { name: "Servers", exact: true }).click();
-    await page.getByText(serverName, { exact: true }).first().click({ timeout: 5e3 });
+async function askServer(fetchImpl, path, payload) {
+  const wasm = await crush(fetchImpl);
+  const json = new TextEncoder().encode(JSON.stringify({ path, payload }));
+  const rand = (0, import_node_crypto.randomBytes)(44);
+  const outLen = 616 + json.length;
+  const pJson = wasm.alloc(json.length), pRand = wasm.alloc(rand.length), pOut = wasm.alloc(outLen);
+  let sealed;
+  try {
+    new Uint8Array(wasm.memory.buffer).set(json, pJson);
+    new Uint8Array(wasm.memory.buffer).set(rand, pRand);
+    const written = wasm.seal_request(pJson, json.length, pRand, rand.length, pOut, outLen);
+    if (written <= 98) throw new Error(`seal_request returned ${written}`);
+    sealed = new Uint8Array(wasm.memory.buffer).slice(pOut, pOut + written);
+  } finally {
+    wasm.dealloc(pJson, json.length);
+    wasm.dealloc(pRand, rand.length);
+    wasm.dealloc(pOut, outLen);
+  }
+  const key = sealed.subarray(0, 32), body = new Uint8Array(sealed.subarray(98));
+  const response = await fetchImpl(`${API}/g`, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=UTF-8", Origin: BASE_URL, Referer: `${BASE_URL}/` },
+    body,
+    signal: AbortSignal.timeout(TIMEOUT_MS)
   });
+  if (!response.ok) return [];
+  const answer = new Uint8Array(await response.arrayBuffer());
+  const aad = new Uint8Array(RESPONSE_AAD.length + 67);
+  aad.set(RESPONSE_AAD);
+  aad.set(body.subarray(0, 67), RESPONSE_AAD.length);
+  const aesKey3 = await import_node_crypto.webcrypto.subtle.importKey("raw", key, "AES-GCM", false, ["decrypt"]);
+  const plain = await import_node_crypto.webcrypto.subtle.decrypt({ name: "AES-GCM", iv: answer.subarray(0, 12), additionalData: aad }, aesKey3, answer.subarray(12));
+  const data = JSON.parse(new TextDecoder().decode(plain));
+  return (data.data?.stream ?? []).filter((s) => s.playlist && (!s.type || s.type === "hls")).map((s) => s.playlist);
 }
 var cinejoySite = {
   id: "cinejoy",
@@ -410,17 +454,15 @@ var cinejoySite = {
   async available(ctx) {
     return (await listServers(ctx.fetch)).some((s) => s.status === "ok");
   },
-  async *captures(page, { match, season, episode }, ctx) {
+  async *httpCaptures({ match, season, episode }, ctx) {
     const servers = (await listServers(ctx.fetch)).filter((s) => s.status === "ok").sort((a, b) => Number(b["4k"]) - Number(a["4k"]));
-    if (!servers.length) return;
-    const perServerTimeoutMs = Math.min(DEFAULT_PER_SERVER_TIMEOUT_MS, Math.max(5e3, ctx.budgetMs / servers.length));
-    await page.goto(watchUrl(match.tmdbId, match.mediaType, season, episode), {
-      waitUntil: "domcontentloaded",
-      timeout: perServerTimeoutMs
-    });
+    const payload = { tmdb: String(match.tmdbId), title: match.title };
+    if (match.year) payload.year = String(match.year);
+    if (match.mediaType === "tv") Object.assign(payload, { season: String(season ?? 1), episode: String(episode ?? 1) });
+    const kind = match.mediaType === "movie" ? "movie" : "series";
     for (const server of servers) {
-      const mediaUrl = await selectServerAndCapture(page, server.name, perServerTimeoutMs);
-      if (mediaUrl) yield { mediaUrl, label: server.name };
+      const playlists = await askServer(ctx.fetch, `/${server.name}/${kind}`, payload).catch(() => []);
+      for (const mediaUrl of playlists) yield { mediaUrl, label: server.name };
     }
   }
 };
@@ -480,7 +522,7 @@ var moviesapiSite = {
 var moviesapi_default = createScraper(moviesapiSite);
 
 // src/sites/vidrock.mts
-var import_node_crypto = require("node:crypto");
+var import_node_crypto2 = require("node:crypto");
 var SITE2 = "https://vidrock.net/";
 var KEY_HEX = "7f3e9c2a8b5d1f4e6a9c3b7d2e5f8a1c4b6d9e2f5a8c1b4d7e9f2a5c8b1d4e7f";
 var SERVERS = ["Orion", "Luna"];
@@ -488,12 +530,12 @@ var API_TIMEOUT_MS3 = 2e4;
 var IV_BYTES = 12;
 var aesKey;
 function importKey() {
-  aesKey ??= import_node_crypto.webcrypto.subtle.importKey("raw", Buffer.from(KEY_HEX, "hex"), "AES-GCM", false, ["decrypt"]);
+  aesKey ??= import_node_crypto2.webcrypto.subtle.importKey("raw", Buffer.from(KEY_HEX, "hex"), "AES-GCM", false, ["decrypt"]);
   return aesKey;
 }
 async function decrypt(blob) {
   const bytes = Buffer.from(blob.replace(/-/g, "+").replace(/_/g, "/"), "base64");
-  const plain = await import_node_crypto.webcrypto.subtle.decrypt({ name: "AES-GCM", iv: bytes.subarray(0, IV_BYTES) }, await importKey(), bytes.subarray(IV_BYTES));
+  const plain = await import_node_crypto2.webcrypto.subtle.decrypt({ name: "AES-GCM", iv: bytes.subarray(0, IV_BYTES) }, await importKey(), bytes.subarray(IV_BYTES));
   return Buffer.from(plain).toString("utf8");
 }
 var vidrockSite = {
@@ -558,9 +600,9 @@ var vixsrcSite = {
 var vixsrc_default = createScraper(vixsrcSite);
 
 // src/sites/atlantic.mts
-var import_node_crypto2 = require("node:crypto");
+var import_node_crypto3 = require("node:crypto");
 var SITE4 = "https://atlantic.st/";
-var API = "https://stream.hls.lol/helios";
+var API2 = "https://stream.hls.lol/helios";
 var KEY_HEX2 = "e4b8a1d6f2c9037b5a8e4d1c6f9b2085a7c3e9f6d1b4a8c2e5f7a0d3b6c9e2f5";
 var PREFIX = "ns_";
 var API_TIMEOUT_MS5 = 2e4;
@@ -568,9 +610,9 @@ var IV_BYTES2 = 12;
 var aesKey2;
 async function decrypt2(value) {
   if (!value.startsWith(PREFIX)) return value;
-  aesKey2 ??= import_node_crypto2.webcrypto.subtle.importKey("raw", Buffer.from(KEY_HEX2, "hex"), "AES-GCM", false, ["decrypt"]);
+  aesKey2 ??= import_node_crypto3.webcrypto.subtle.importKey("raw", Buffer.from(KEY_HEX2, "hex"), "AES-GCM", false, ["decrypt"]);
   const bytes = Buffer.from(value.slice(PREFIX.length), "hex");
-  const plain = await import_node_crypto2.webcrypto.subtle.decrypt({ name: "AES-GCM", iv: bytes.subarray(0, IV_BYTES2) }, await aesKey2, bytes.subarray(IV_BYTES2));
+  const plain = await import_node_crypto3.webcrypto.subtle.decrypt({ name: "AES-GCM", iv: bytes.subarray(0, IV_BYTES2) }, await aesKey2, bytes.subarray(IV_BYTES2));
   return Buffer.from(plain).toString("utf8");
 }
 var atlanticSite = {
@@ -581,7 +623,7 @@ var atlanticSite = {
   maxQuality: "1080p",
   async *httpCaptures({ match, season, episode }, ctx) {
     const query = match.mediaType === "movie" ? `tmdbId=${match.tmdbId}&type=movie` : `tmdbId=${match.tmdbId}&type=tv&seasonId=${season ?? 1}&episodeId=${episode ?? 1}`;
-    const response = await ctx.fetch(`${API}?${query}`, { headers: { Referer: SITE4, Origin: SITE4.slice(0, -1) }, signal: AbortSignal.timeout(API_TIMEOUT_MS5) });
+    const response = await ctx.fetch(`${API2}?${query}`, { headers: { Referer: SITE4, Origin: SITE4.slice(0, -1) }, signal: AbortSignal.timeout(API_TIMEOUT_MS5) });
     if (!response.ok) return;
     const body = await response.json();
     for (const [name, entry] of Object.entries(body.sources ?? {})) {
@@ -598,7 +640,7 @@ var atlantic_default = createScraper(atlanticSite);
 
 // src/sites/vidlove.mts
 var PLAYER2 = "https://player.vidlove.cc/";
-var API2 = "https://api.vidlove.cc/";
+var API3 = "https://api.vidlove.cc/";
 var API_TIMEOUT_MS6 = 2e4;
 var vidloveSite = {
   id: "vidlove",
@@ -607,7 +649,7 @@ var vidloveSite = {
   maxQuality: "1080p",
   async *httpCaptures({ match, season, episode }, ctx) {
     const path = match.mediaType === "movie" ? `movie?id=${match.tmdbId}` : `tv?id=${match.tmdbId}&season=${season ?? 1}&episode=${episode ?? 1}`;
-    const response = await ctx.fetch(`${API2}${path}&mode=json&sources=vidapi`, {
+    const response = await ctx.fetch(`${API3}${path}&mode=json&sources=vidapi`, {
       headers: { Referer: PLAYER2, Origin: PLAYER2.slice(0, -1) },
       signal: AbortSignal.timeout(API_TIMEOUT_MS6)
     });
@@ -625,7 +667,7 @@ var vidloveSite = {
 var vidlove_default = createScraper(vidloveSite);
 
 // src/sites/vidnest.mts
-var API3 = "https://new.vidnest.fun/";
+var API4 = "https://new.vidnest.fun/";
 var PLAYER3 = "https://vidnest.fun/";
 var MEDIA_REFERRER = "https://nextgencloudfabric.com/";
 var ALPHABET = "RB0fpH8ZEyVLkv7c2i6MAJ5u3IKFDxlS1NTsnGaqmXYdUrtzjwObCgQP94hoeW+/=";
@@ -650,7 +692,7 @@ var vidnestSite = {
   maxQuality: "1080p",
   async *httpCaptures({ match, season, episode }, ctx) {
     const path = match.mediaType === "movie" ? `movie/${match.tmdbId}` : `tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
-    const response = await ctx.fetch(`${API3}nextgencloudfabric/${path}`, {
+    const response = await ctx.fetch(`${API4}nextgencloudfabric/${path}`, {
       headers: { Referer: PLAYER3, Origin: PLAYER3.slice(0, -1) },
       signal: AbortSignal.timeout(API_TIMEOUT_MS7)
     });
@@ -669,7 +711,7 @@ var vidnestSite = {
 var vidnest_default = createScraper(vidnestSite);
 
 // src/sites/rivestream.mts
-var API4 = "https://scrapper.rivestream.app/api/provider";
+var API5 = "https://scrapper.rivestream.app/api/provider";
 var API_TIMEOUT_MS8 = 2e4;
 var rivestreamSite = {
   id: "rivestream",
@@ -679,7 +721,7 @@ var rivestreamSite = {
   maxQuality: "4K",
   async *httpCaptures({ match, season, episode }, ctx) {
     const query = match.mediaType === "movie" ? `id=${match.tmdbId}` : `id=${match.tmdbId}&season=${season ?? 1}&episode=${episode ?? 1}`;
-    const response = await ctx.fetch(`${API4}?provider=vanguard&${query}`, { signal: AbortSignal.timeout(API_TIMEOUT_MS8) });
+    const response = await ctx.fetch(`${API5}?provider=vanguard&${query}`, { signal: AbortSignal.timeout(API_TIMEOUT_MS8) });
     if (!response.ok) return;
     const body = await response.json();
     for (const source of body.data?.sources ?? []) {
@@ -764,16 +806,16 @@ var lookmovieSite = {
 var lookmovie_default = createScraper(lookmovieSite);
 
 // src/sites/aetherlul.mts
-var API5 = "https://lul.aether.cx/";
+var API6 = "https://lul.aether.cx/";
 var API_TIMEOUT_MS10 = 2e4;
 var aetherlulSite = {
   id: "aetherlul",
   name: "Aether",
-  referrer: API5,
+  referrer: API6,
   maxQuality: "1080p",
   async *httpCaptures({ match, season, episode }, ctx) {
     const path = match.mediaType === "movie" ? `movie/${match.tmdbId}` : `tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
-    const response = await ctx.fetch(`${API5}${path}`, { signal: AbortSignal.timeout(API_TIMEOUT_MS10) });
+    const response = await ctx.fetch(`${API6}${path}`, { signal: AbortSignal.timeout(API_TIMEOUT_MS10) });
     if (!response.ok) return;
     const body = await response.json();
     if (body.stream) yield { mediaUrl: body.stream, label: "Aether" };
@@ -781,20 +823,319 @@ var aetherlulSite = {
 };
 var aetherlul_default = createScraper(aetherlulSite);
 
+// src/cinesrc.mts
+var import_node_crypto4 = require("node:crypto");
+var subtle = import_node_crypto4.webcrypto.subtle;
+var CINESRC_ORIGIN = "https://cinesrc.st";
+var UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+var PROTOCOL = "csp3-20260613-b";
+var TIMEOUT_MS2 = 15e3;
+var FIELD = [
+  "f78e3f38-5436-4d74-98e1-3ff89c437531",
+  "14f36d78-cd51-4c30-a14f-c9837603f11a",
+  "d320ff1b-828b-40d8-8078-51223f760da2",
+  "c95a9d35-0eab-4763-ae6d-84e88bf9b95a",
+  "a4df7df1-ad2c-475d-bf9a-32aef923db26",
+  "5ebfd557-0100-4a61-ab6d-ad01367b29ae",
+  "9729037b-4b95-48a5-aad2-9dd5a6c0fbf0",
+  "187cd216-ab92-41f1-9f5a-81e311b07f4e",
+  "36252f09-c35f-4397-aa77-6a9732995c78",
+  "49ac9c1d-32cd-4e3f-8036-cc822845d864",
+  "734a3ec4-0aa2-4e4c-9c98-f41f6677669b",
+  "53cb60c4-b283-412d-899b-5bc36242df50",
+  "9f23a7cc-e448-45c6-b38a-089bc7afb150",
+  "f19257de-6e6c-4159-9837-65bc66117d6b",
+  "65a17c01-9e53-4e40-b1e7-3fe9171229b3",
+  "89fd8156-2e9e-4bc4-9f58-e2b31f781f12",
+  "362c5fe0-82df-4a68-84cc-9f830748444e"
+];
+var S1_FP = {
+  tz: "Europe/Berlin",
+  lang: "en-US",
+  langs: "en-US",
+  pf: "MacIntel",
+  cm: true,
+  dpr: 1,
+  sw: 1280,
+  sh: 720,
+  cd: 24,
+  cvs: "21a9107876214fe3eb34060b571202e12902e03b3ec8ca796076175f73166c14",
+  wgl: "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 10.0.0) (0x0000C0DE)), SwiftShader driver)|Google Inc. (Google)",
+  jit: "0.7999999523162842,0.8999999761581421,0.8999999761581421,0.8999999761581421,0.8999999761581421"
+};
+var C2_FP = {
+  c: "6459ff4d5300250cd77b3f29d7dd0f9978345a8baefab32bb62aa61cb18c3bf3",
+  g: "d6e2257b4df542735f146b8f5177f7e5ffc544f7ffc256f2c2645bc23dad9692",
+  tz: "Europe/Berlin",
+  l: "en-US",
+  ls: "en-US",
+  pf: "MacIntel",
+  sw: 1280,
+  sh: 720,
+  cd: 24,
+  ce: true,
+  dpr: 1
+};
+var b64 = (b) => Buffer.from(b).toString("base64");
+var b64u = (b) => Buffer.from(b).toString("base64url");
+var reverse = (s) => s.split("").reverse().join("");
+var rotl = (x, n) => (x << n | x >>> 32 - n) >>> 0;
+function donutHash(input) {
+  const bytes = new TextEncoder().encode(input);
+  let a = (3266489909 ^ bytes.length) >>> 0, b = 50595078, c = 67372036, d = 2654435769, e = 2246822507;
+  for (let i = 0; i < bytes.length; i++) {
+    const ch = bytes[i];
+    b = rotl((b ^ ch + i + a >>> 0) >>> 0, 5) + c >>> 0;
+    const c1 = rotl(c + (b >>> 16 ^ ch) + 668265261 >>> 0, 7);
+    const y = rotl((c1 ^ ch << (i & 3) * 8 >>> 0) >>> 0, 11) + e >>> 0;
+    const e1 = rotl(e + y + ((b ^ ch) >>> 0) >>> 0, 13);
+    c = (c1 ^ d) >>> 0;
+    d = y;
+    e = (e1 ^ a) >>> 0;
+    a = rotl((e1 ^ ch + Math.imul(i + 1, 73244475) >>> 0) >>> 0, 17);
+  }
+  for (let r = 0; r < 12; r++) {
+    b = (rotl(b + a + Math.imul(r + 1, 2654435761) >>> 0, 3) ^ c) >>> 0;
+    c = rotl((c ^ d ^ Math.imul(r + 3, 2246822519)) >>> 0, 9) + e >>> 0;
+    d = (rotl(d + b + Math.imul(r + 5, 3266489917) >>> 0, 15) ^ a) >>> 0;
+    e = rotl((e ^ c ^ Math.imul(r + 7, 668265263)) >>> 0, 21) + b >>> 0;
+    a = (rotl(a + d + e + r >>> 0, 27) ^ b) >>> 0;
+  }
+  return [b, c, d, e, a].map((v) => v.toString(16).padStart(8, "0")).join("");
+}
+var powModule;
+async function solveIssuePow(fetch, work) {
+  powModule ??= fetch(`${CINESRC_ORIGIN}/pow-v3.wasm`, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(TIMEOUT_MS2) }).then((r) => {
+    if (!r.ok) throw new Error(`pow-v3.wasm ${r.status}`);
+    return r.arrayBuffer();
+  }).then(async (bytes) => {
+    const module3 = await WebAssembly.compile(bytes);
+    if (WebAssembly.Module.imports(module3).length) throw new Error("pow-v3.wasm now has imports");
+    return module3;
+  });
+  const module2 = await powModule.catch((err) => {
+    powModule = void 0;
+    throw err;
+  });
+  const exports2 = (await WebAssembly.instantiate(module2, {})).exports;
+  const input = Buffer.from(work, "base64url");
+  const ptr = exports2.a(input.length);
+  new Uint8Array(exports2.memory.buffer).set(input, ptr);
+  const out = exports2.b(ptr, input.length);
+  const mem = new Uint8Array(exports2.memory.buffer);
+  let end = out;
+  while (mem[end]) end++;
+  return Buffer.from(mem.subarray(out, end)).toString("latin1");
+}
+function solveFingerprintPow(salt, target) {
+  for (let n = 0; n < 1 << 24; n++) {
+    const x = n.toString(16).padStart(5, "0");
+    if ((0, import_node_crypto4.createHash)("sha256").update(salt + x).digest("hex") === target) return x;
+  }
+  throw new Error("fingerprint pow unsolved");
+}
+async function seal(spki, plaintext, context) {
+  const raw = new Uint8Array((0, import_node_crypto4.randomBytes)(32));
+  const aesKey3 = await subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt"]);
+  const rsaKey = await subtle.importKey("spki", spki, { name: "RSA-OAEP", hash: "SHA-256" }, false, ["encrypt"]);
+  const iv = new Uint8Array((0, import_node_crypto4.randomBytes)(12));
+  const ct = new Uint8Array(await subtle.encrypt({ name: "AES-GCM", iv, ...context ? { additionalData: context } : {} }, aesKey3, plaintext(raw)));
+  const wrapped = new Uint8Array(await subtle.encrypt({ name: "RSA-OAEP", ...context ? { label: context } : {} }, rsaKey, raw));
+  return { wrapped, iv, ct };
+}
+async function buildC2(pack, now) {
+  const ss2 = reverse(String(pack[4]));
+  const inner = Buffer.from(ss2.split(".")[1] ?? "", "base64").toString();
+  const token = JSON.parse(Buffer.from(inner.split(".")[1] ?? "", "base64url").toString());
+  const x = solveFingerprintPow(token.salt, token.target);
+  const body = {
+    v: 1,
+    t: now,
+    ua: UA,
+    p: { s: token.salt, x },
+    fp: C2_FP,
+    xg: {
+      r: ss2,
+      t: now,
+      s: donutHash(`${inner}${token.salt}${x}${token.target}${now}`),
+      m: donutHash(`${ss2}${token.salt}stage2`).slice(0, 24)
+    }
+  };
+  const spki = Buffer.from(reverse(String(pack[2])), "base64");
+  const sealed = await seal(spki, () => new TextEncoder().encode(JSON.stringify(body)));
+  return `c2~${b64u(sealed.wrapped)}~${b64u(sealed.iv)}~${b64u(sealed.ct)}`;
+}
+var decoy = () => ["_z" + Math.floor(Math.random() * 1296).toString(36).padStart(2, "0"), b64((0, import_node_crypto4.randomBytes)(4))];
+async function buildS1(opts) {
+  const { issue, proof, now, path, clientPub, pem } = opts;
+  const fields = [
+    FIELD[0],
+    PROTOCOL,
+    FIELD[1],
+    "s1",
+    FIELD[2],
+    issue.w,
+    ...decoy(),
+    FIELD[3],
+    proof,
+    FIELD[4],
+    issue.t,
+    FIELD[5],
+    issue.n,
+    ...decoy(),
+    FIELD[6],
+    issue.s,
+    FIELD[7],
+    now,
+    FIELD[8],
+    (0, import_node_crypto4.randomBytes)(8).toString("hex"),
+    ...decoy(),
+    FIELD[9],
+    UA,
+    FIELD[10],
+    path,
+    FIELD[11],
+    S1_FP,
+    ...decoy(),
+    FIELD[12],
+    b64((0, import_node_crypto4.randomBytes)(16)),
+    FIELD[13],
+    (0, import_node_crypto4.randomBytes)(32).toString("hex"),
+    FIELD[14],
+    b64(clientPub),
+    ...decoy(),
+    FIELD[15],
+    1,
+    FIELD[16],
+    b64((0, import_node_crypto4.randomBytes)(18))
+  ];
+  const context = new TextEncoder().encode(`cinesrc-challenge|${PROTOCOL}|s1`);
+  const spki = Buffer.from(pem.replace(/-----[^-]+-----|\s/g, ""), "base64");
+  const json = new TextEncoder().encode(JSON.stringify(fields));
+  const sealed = await seal(spki, (key) => json.map((byte, i) => byte ^ key[i % 32]), context);
+  return `s1~${b64(sealed.wrapped)}~${b64(sealed.iv)}~${b64(sealed.ct)}`;
+}
+var FALLBACK_ACTIONS = {
+  getStream: "7eaf09c6d168184a0b875694dce39c349662222742",
+  getProviderList: "00db14302a7e49e28e8eecf1a657ce239ab8b44c47"
+};
+var actions = FALLBACK_ACTIONS;
+var actionsRefreshedAt = 0;
+async function refreshActions(fetch, path) {
+  if (Date.now() - actionsRefreshedAt < 6e4) return false;
+  actionsRefreshedAt = Date.now();
+  const html = await (await fetch(CINESRC_ORIGIN + path, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(TIMEOUT_MS2) })).text();
+  const chunks = [...new Set(html.match(/\/_next\/static\/chunks\/[\w.-]+\.js/g) ?? [])];
+  const found = {};
+  await Promise.all(chunks.map(async (chunk) => {
+    const js = await (await fetch(CINESRC_ORIGIN + chunk, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(TIMEOUT_MS2) })).text().catch(() => "");
+    for (const m of js.matchAll(/createServerReference\)\("([0-9a-f]{40,})",[^)]*?"(getStream|getProviderList)"\)/g)) found[m[2]] = m[1];
+  }));
+  if (!found.getStream) return false;
+  actions = { ...actions, ...found };
+  return true;
+}
+async function callAction(fetch, path, id, args) {
+  const res = await fetch(CINESRC_ORIGIN + path, {
+    method: "POST",
+    headers: { "user-agent": UA, referer: `${CINESRC_ORIGIN}/`, origin: CINESRC_ORIGIN, accept: "text/x-component", "content-type": "text/plain;charset=UTF-8", "next-action": id },
+    body: JSON.stringify(args),
+    signal: AbortSignal.timeout(TIMEOUT_MS2)
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`action ${res.status}`);
+  return text;
+}
+function pagePath(target) {
+  return `/embed/${target.mediaType}/${target.tmdbId}`;
+}
+async function listProviders(fetch, target) {
+  const path = pagePath(target);
+  let rsc = await callAction(fetch, path, actions.getProviderList, []).catch(() => "");
+  if (!rsc.includes('"rank"') && await refreshActions(fetch, path).catch(() => false)) rsc = await callAction(fetch, path, actions.getProviderList, []).catch(() => "");
+  const line = rsc.split("\n").find((l) => l.startsWith("1:["));
+  if (!line) return [];
+  return JSON.parse(line.slice(2)).sort((x, y) => y.rank - x.rank);
+}
+async function getStream(fetch, target, provider) {
+  const path = pagePath(target);
+  const cookies = /* @__PURE__ */ new Map();
+  const api = async (p, init = {}) => {
+    const res = await fetch(CINESRC_ORIGIN + p, {
+      ...init,
+      headers: { "user-agent": UA, referer: `${CINESRC_ORIGIN}/`, origin: CINESRC_ORIGIN, cookie: [...cookies].map(([k, v]) => `${k}=${v}`).join("; "), ...init.headers },
+      signal: AbortSignal.timeout(TIMEOUT_MS2)
+    });
+    for (const c of res.headers.getSetCookie?.() ?? []) {
+      const kv = c.split(";")[0] ?? "";
+      const eq = kv.indexOf("=");
+      if (eq > 0) cookies.set(kv.slice(0, eq), kv.slice(eq + 1));
+    }
+    if (!res.ok) throw new Error(`${p} ${res.status}`);
+    return await res.json();
+  };
+  const query = JSON.stringify([target.mediaType, String(target.tmdbId), target.season != null ? String(target.season) : null, target.episode != null ? String(target.episode) : null]);
+  const xq = b64u(new TextEncoder().encode(query));
+  const boot = await api("/api/c/bootstrap", { method: "POST", headers: { "x-cs-q": xq } });
+  cookies.set("cs_ac", boot.r);
+  const pbCookie = "cs_pb_" + (0, import_node_crypto4.createHash)("sha256").update(query).digest("hex").slice(0, 16);
+  cookies.set(pbCookie, boot.p);
+  const issue = await api("/api/c/issue", { headers: { "x-cs-q": xq, "x-cs-p": boot.p, "x-cs-r": boot.r } });
+  cookies.delete(pbCookie);
+  const [{ pack }, { pk }, proof] = await Promise.all([
+    api("/api/c/stage2/issue", { headers: { "x-cs-q": xq, "x-cs-r": boot.r } }),
+    api("/api/c/pk"),
+    solveIssuePow(fetch, issue.w)
+  ]);
+  const now = Date.now();
+  const ecdh = await subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, false, ["deriveBits"]);
+  const clientPub = new Uint8Array(await subtle.exportKey("raw", ecdh.publicKey));
+  const s1 = await buildS1({ issue, proof, now, path, clientPub, pem: pk });
+  const c2 = await buildC2(pack, now);
+  const challenge = `${s1}::c2::${c2}::c3::${boot.r}`;
+  const args = [String(target.tmdbId), target.mediaType === "movie" ? "movie" : "show", target.season ?? "$undefined", target.episode ?? "$undefined", challenge, provider];
+  let rsc = await callAction(fetch, path, actions.getStream, args).catch(() => "");
+  if (!rsc.includes(":") && await refreshActions(fetch, path).catch(() => false)) return getStream(fetch, target, provider);
+  const answer = rsc.match(/r3\.[^"\n\\]+/)?.[0];
+  if (!answer) return null;
+  const [, serverPub = "", salt = "", iv = "", header = "", ct = ""] = answer.split(".");
+  const serverKey = await subtle.importKey("raw", Buffer.from(serverPub, "base64url"), { name: "ECDH", namedCurve: "P-256" }, false, []);
+  const shared = await subtle.deriveBits({ name: "ECDH", public: serverKey }, ecdh.privateKey, 256);
+  const hkdf = await subtle.importKey("raw", shared, "HKDF", false, ["deriveKey"]);
+  const context = `cinesrc-response|${PROTOCOL}|r3|${serverPub}|${header}`;
+  const aes = await subtle.deriveKey(
+    { name: "HKDF", hash: "SHA-256", salt: Buffer.from(salt, "base64url"), info: new TextEncoder().encode(`${context}|${b64u(clientPub)}|kdf`) },
+    hkdf,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["decrypt"]
+  );
+  const plain = await subtle.decrypt({ name: "AES-GCM", iv: Buffer.from(iv, "base64url"), additionalData: new TextEncoder().encode(context) }, aes, Buffer.from(ct, "base64url"));
+  return JSON.parse(new TextDecoder().decode(plain));
+}
+
 // src/sites/shuttletv.mts
+var MAX_PROVIDERS = 4;
 var shuttletvSite = {
   id: "shuttletv",
   name: "ShuttleTV",
-  referrer: "https://cinesrc.st/",
+  referrer: `${CINESRC_ORIGIN}/`,
   maxQuality: "4K",
-  async *captures(page, { match, season, episode }, ctx) {
-    const base = "https://cinesrc.st/embed";
-    const url = match.mediaType === "movie" ? `${base}/movie/${match.tmdbId}` : `${base}/tv/${match.tmdbId}?season=${season ?? 1}&episode=${episode ?? 1}`;
-    yield* autoplayCapture(page, url, ctx, { isPlaylist: /^https:\/\/cinesrc\.st\/api\/playlist\//i });
+  async *httpCaptures({ match, season, episode }, ctx) {
+    const target = match.mediaType === "movie" ? { tmdbId: match.tmdbId, mediaType: "movie" } : { tmdbId: match.tmdbId, mediaType: "tv", season: season ?? 1, episode: episode ?? 1 };
+    const listed = await listProviders(ctx.fetch, target).catch(() => []);
+    const providers = listed.length ? listed.slice(0, MAX_PROVIDERS) : [{ id: "nebula", name: "Nebula", rank: 0 }];
+    for (const provider of providers) {
+      const stream = await getStream(ctx.fetch, target, provider.id).catch(() => null);
+      for (const source of stream?.url ?? []) {
+        if (!source.url || source.source && source.source !== "HLS") continue;
+        yield { mediaUrl: new URL(source.url, CINESRC_ORIGIN).href, label: stream?.name ?? provider.name };
+      }
+    }
   }
 };
 var shuttletv_default = createScraper(shuttletvSite);
 
 // src/index.mts
-var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default].map((scraper) => ({ ...scraper, version: "1.17.2" }));
+var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default].map((scraper) => ({ ...scraper, version: "1.18.0" }));
 var index_default = scrapers;
