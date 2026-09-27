@@ -315,6 +315,9 @@ function createScraper(site) {
   return {
     id: site.id,
     name: `${site.name} \xB7 up to ${site.maxQuality}`,
+    maxQuality: site.maxQuality,
+    // A BrowserSite drives Playwright/Chromium ("slow"); an HttpSite is plain fetch ("fast").
+    fetchMethod: "captures" in site ? "slow" : "fast",
     search: (query, ctx) => searchSite(site, query, ctx),
     resolve: (_resolveId, query, ctx) => resolveSite(site, query, ctx)
   };
@@ -793,5 +796,5 @@ var shuttletvSite = {
 var shuttletv_default = createScraper(shuttletvSite);
 
 // src/index.mts
-var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default].map((scraper) => ({ ...scraper, version: "1.16.0" }));
+var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default].map((scraper) => ({ ...scraper, version: "1.17.0" }));
 var index_default = scrapers;
