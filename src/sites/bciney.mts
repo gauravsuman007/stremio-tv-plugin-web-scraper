@@ -9,7 +9,8 @@ import { createScraper, type Capture, type HttpSite } from "../shared.mts";
  * (./archive/bciney-browser.mts). No special headers needed.
  */
 const PLAYER = "https://player.bciney.to";
-const TIMEOUT_MS = 15_000;
+/** The embed page renders in ~1s when bCine has it cached and up to ~18s when not. */
+const TIMEOUT_MS = 30_000;
 
 interface BcineyServer {
     name?: string;

@@ -25,12 +25,14 @@ lives only in `src/browser.mts` (research and the archive; never bundled), so
 All share `src/shared.mts` (TMDB lookup, playlist verification, best-stream
 picking) and each site is one small module in `src/sites/`.
 
-`search()` resolves for real within the host's search budget (15s) and returns
+`search()` resolves for real within the host's search budget (web-links'
+"Search timeout" setting, 5s by default) and returns
 one row per working server, best first (at most three per site), each stating
 the resolution its playlist actually carries, e.g. `1920x1080/1280x720 ·
 Nebula`, plus `height` so web-links >= 0.11.0 lists every scraper's rows
 best resolution first. A site with nothing playable returns no row; one that doesn't finish
-in time returns a placeholder row resolved at play time. Servers are checked
+in time returns a placeholder row and keeps resolving in the background, so
+pressing play picks up that same run instead of starting over. Servers are checked
 concurrently. Every row keeps a `resolveId` (`<site>` or `<site>~<server>`):
 `resolve()` hands back the link search found once a quick fetch shows it still
 works, and otherwise resolves afresh, preferring that row's server (stopping

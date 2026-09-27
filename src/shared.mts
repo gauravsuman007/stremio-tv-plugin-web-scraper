@@ -203,6 +203,10 @@ export interface Capture {
     mediaUrl: string;
     /** Mirror/server name, when the site has several. */
     label?: string;
+    /** This capture's own media Referer/headers, for a site whose servers
+     *  sit on different CDNs; otherwise the site's `referrer`/`headers`. */
+    referrer?: string;
+    headers?: Record<string, string>;
 }
 
 export interface SiteBase {
@@ -258,7 +262,9 @@ interface Candidate {
  * fetches, its best variant is a finished playlist longer than a stub. Returns
  * the link to hand out, or null for a dead/blocked/decoy mirror.
  */
-async function verifyCapture(site: SiteBase, { mediaUrl, label }: Capture, displayTitle: string, ctx: ScraperContext): Promise<Candidate | null> {
+async function verifyCapture(base: SiteBase, capture: Capture, displayTitle: string, ctx: ScraperContext): Promise<Candidate | null> {
+    const { mediaUrl, label } = capture;
+    const site = { ...base, referrer: capture.referrer ?? base.referrer, headers: capture.headers ?? base.headers };
     const variants = await expandMasterPlaylist(ctx.fetch, mediaUrl, mediaHeaders(site)).catch(() => null);
     const top = variants?.[0]; // sorted by bandwidth, highest first.
     if (!variants || !top) return null;
@@ -296,7 +302,7 @@ async function verifyCapture(site: SiteBase, { mediaUrl, label }: Capture, displ
                   : mirror,
             title: displayTitle,
             referrer: site.referrer,
-            ...(site.headers ? { headers: site.headers } : {}),
+            ...(site.headers && Object.keys(site.headers).length ? { headers: site.headers } : {}),
             ...(height ? { height } : {})
         }
     };
@@ -423,16 +429,38 @@ async function candidatesFor(site: HttpSite, query: WebLinkQuery, ctx: ScraperCo
     return { match, ...result };
 }
 
+/*
+    ONE RESOLVE PER SITE AND TITLE AT A TIME. Search starts it; if the host's
+    search budget runs out first, the row goes out as a placeholder but the
+    resolve carries on, and a play pressed meanwhile waits for that same run
+    instead of starting another.
+*/
+const inflight = new Map<string, ReturnType<typeof candidatesFor>>();
+
+function sharedCandidates(site: HttpSite, query: WebLinkQuery, ctx: ScraperContext): ReturnType<typeof candidatesFor> {
+    const key = linkKey(site.id, query);
+    let run = inflight.get(key);
+    if (!run) {
+        run = candidatesFor(site, query, ctx, RESOLVE_DEADLINE_MS)
+            .catch(() => null)
+            .finally(() => inflight.delete(key));
+        inflight.set(key, run);
+    }
+    return run;
+}
+
 /**
  * PLAY TIME: the link search found for this row, if it still fetches;
- * otherwise a fresh resolve, preferring the row's own server (`<id>~<label>`)
- * and falling back to the site's best.
+ * otherwise a fresh resolve (or the one already running), preferring the
+ * row's own server (`<id>~<label>`) and falling back to the site's best.
  */
 async function resolveSite(site: HttpSite, resolveId: string, query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink | null> {
     const cached = linkCache.get(linkKey(resolveId, query));
     if (cached && Date.now() - cached.at < LINK_MAX_AGE_MS && (await stillPlays(cached.link, ctx))) return cached.link;
 
-    const found = await candidatesFor(site, query, ctx, RESOLVE_DEADLINE_MS);
+    let found = await sharedCandidates(site, query, ctx);
+    // A run that was already under way may predate this row's link going stale: one fresh try.
+    if (!found?.candidates.length && cached) found = await sharedCandidates(site, query, ctx);
     if (!found) return null;
     const label = resolveId.includes("~") ? resolveId.slice(resolveId.indexOf("~") + 1) : undefined;
     return (found.candidates.find((c) => label && c.label === label) ?? found.candidates[0])?.link ?? null;
@@ -441,27 +469,29 @@ async function resolveSite(site: HttpSite, resolveId: string, query: WebLinkQuer
 /** At most this many rows per site: its best few servers, not every mirror. */
 const MAX_ROWS_PER_SITE = 3;
 /** Left of the host's search budget for its own work. */
-const SEARCH_MARGIN_MS = 1_500;
+const SEARCH_MARGIN_MS = 500;
 
 /**
  * LIST TIME: resolves for real within the host's search budget, so each row
  * states the resolution its playlist actually carries rather than a guess --
  * one row per working server (up to `MAX_ROWS_PER_SITE`), best first. A site
  * that answered and has nothing playable shows no row at all. One that
- * didn't finish in time keeps today's placeholder row, resolved at play time.
- * Every row keeps a `resolveId`: the URL is looked up (and re-checked) when
- * played, never baked into the list.
+ * didn't finish in time gets a placeholder row and keeps resolving in the
+ * background, so play is quick either way. Every row keeps a `resolveId`:
+ * the URL is looked up (and re-checked) when played, never baked into the list.
  */
 async function searchSite(site: HttpSite, query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink[]> {
     if (site.available && !(await site.available(ctx).catch(() => false))) return [];
 
-    const found = await candidatesFor(site, query, ctx, Math.max(3_000, ctx.budgetMs - SEARCH_MARGIN_MS));
-    if (!found) return [];
-    const title = `${displayName(found.match)} · ${site.name}`;
+    const budgetMs = Math.max(1_000, ctx.budgetMs - SEARCH_MARGIN_MS);
+    const found = await Promise.race([sharedCandidates(site, query, ctx), new Promise<"late">((r) => setTimeout(() => r("late"), budgetMs))]);
 
-    if (!found.candidates.length) {
-        return found.complete ? [] : [{ url: "", resolveId: site.id, resolveKind: "hls", title }];
+    if (found === "late") {
+        const match = await resolveTmdbMatch(query, ctx.fetch).catch(() => null);
+        return match ? [{ url: "", resolveId: site.id, resolveKind: "hls", title: `${displayName(match)} · ${site.name}` }] : [];
     }
+    if (!found?.candidates.length) return [];
+    const title = `${displayName(found.match)} · ${site.name}`;
 
     const rows: WebLink[] = [];
     const seen = new Set<string>();

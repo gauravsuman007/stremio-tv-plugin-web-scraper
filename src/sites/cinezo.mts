@@ -8,6 +8,11 @@ import { createScraper, type HttpSite } from "../shared.mts";
  * Only the `berlin` source is used: it returns an HLS master (up to 1080p).
  * `zendaya` is DASH, which the host's link kinds can't carry, and `cinefreak`
  * / `jennifer` returned nothing for any title tried.
+ *
+ * 2026-09-27: the player now lives on arrowtv.net itself (player.cinezo.live
+ * redirects to a 404), but the API still takes this Referer. Coverage is
+ * thin -- arrowtv's own player also finds nothing for e.g. The Matrix -- so
+ * a null here is usually the site, not the scraper.
  */
 const PLAYER = "https://player.cinezo.live/";
 const API_TIMEOUT_MS = 20_000;

@@ -8,10 +8,15 @@ import { createScraper, type Capture, type HttpSite } from "../shared.mts";
  *   GET https://lul.aether.cx/{movie/TMDB | tv/TMDB/S/E} -> {stream: url} | {error}
  *
  * `stream` is a single-rendition HLS master on `cflul.ax5.workers.dev/vid/...`
- * (a Cloudflare Worker). No Referer needed on either host.
+ * (a Cloudflare Worker), which needs no headers.
+ *
+ * Since 2026-09-27 the API host's Cloudflare answers a request with no
+ * Referer with an "Attention Required" block page (403); any Referer from the
+ * fork's own site passes.
  */
 const API = "https://lul.aether.cx/";
 const API_TIMEOUT_MS = 20_000;
+const FRONT_END = "https://aether.ist/";
 
 const aetherlulSite: HttpSite = {
     id: "aetherlul",
@@ -21,7 +26,7 @@ const aetherlulSite: HttpSite = {
     async *httpCaptures({ match, season, episode }, ctx): AsyncGenerator<Capture> {
         const path = match.mediaType === "movie" ? `movie/${match.tmdbId}` : `tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
 
-        const response = await ctx.fetch(`${API}${path}`, { signal: AbortSignal.timeout(API_TIMEOUT_MS) });
+        const response = await ctx.fetch(`${API}${path}`, { headers: { Referer: FRONT_END }, signal: AbortSignal.timeout(API_TIMEOUT_MS) });
         if (!response.ok) return;
 
         const body = (await response.json()) as { stream?: string; error?: string };
