@@ -40,7 +40,8 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | vidking.net | rejected | Cloudflare challenge / no connection. |
 | vidsrc.to | possible | 2026-09-27: no real Cloudflare gate (homepage loads plain). `embed/movie/<tmdb>` redirects through `vsembed.ru` (`vs_src.php?type=movie&id=<tmdb>`) to `cloudorchestranova.com/embed/movie/<tmdb>?vs=<token>`, which loads `vsdec.js` -- an obfuscated decoder for an encrypted source blob, the same "ProRCP"-style scheme vidsrc.to is publicly known for. No stream URL recovered; would need reverse-engineering `vsdec.js`'s decryption, not attempted this pass. |
 | vidcore.net / vidcore.io | rejected | 403 (checked earlier). |
-| cinesrc.st | implemented | ShuttleTV's backend (shuttletv scraper). |
+| api.wing.st | implemented | CineJoy's backend (cinejoy scraper). Plain HTTP since 1.18.0 (was browser-driven): requests to `/g` are sealed by running its zero-import `crush.wasm` in Node, answers are AES-GCM. Servers: Nebula (nebula.bright67.online, same files as cinesrc's Nebula), Lisbon (lit.cheaptruckrepairs.cc, up to 4K), Solara (cheaptruckrepairs.cc), Athens. See STRATEGIES.md. |
+| cinesrc.st | implemented | ShuttleTV's backend (shuttletv scraper). Plain HTTP since 1.18.0 (was browser-driven): its challenge/ECDH protocol is rebuilt in `src/cinesrc.mts`, only its zero-import `pow-v3.wasm` is run. Providers seen: Nebula (nebula.bright67.online, 1080p), Lisbon (up to 4K). See STRATEGIES.md. |
 
 ## Implemented (12)
 
@@ -53,11 +54,11 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | [7Movies](https://7movies.ac/) | stream-aggregators | sevenMovies |
 | [ArrowTV, 2 or Cinezo, 2](https://arrowtv.net/) | stream-aggregators | cinezo (Cinezo) |
 | [bCine](https://bcine.ru/) | stream-aggregators | bciney |
-| [Cinejoy](https://cinejoy.pk/) | stream-aggregators | cinejoy |
+| [Cinejoy](https://cinejoy.pk/) | stream-aggregators | cinejoy -- plain HTTP (crush.wasm in Node) since 1.18.0 |
 | [Flixer, 2, 3 or Hexa](https://flixer.gd) | stream-aggregators | flixer |
 | [Movy](https://www.movy.sx/) | stream-aggregators | movy |
 | [Rive, 2, 3 or CorsFlix, 2, 3](https://www.rivestream.app/) | stream-aggregators | rivestream (Rivestream) -- 1.15.0; its scraper API is plain JSON (the Turnstile is only on the site UI) |
-| [ShuttleTV, 2, 3](https://shuttletv.su/) | stream-aggregators | shuttletv |
+| [ShuttleTV, 2, 3](https://shuttletv.su/) | stream-aggregators | shuttletv -- plain HTTP (cinesrc protocol, src/cinesrc.mts) since 1.18.0 |
 
 ## Candidates (verified, ready to build) (0)
 

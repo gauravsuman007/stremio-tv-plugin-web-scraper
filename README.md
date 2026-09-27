@@ -5,16 +5,21 @@ ShuttleTV, 7Movies, Cinezo, MoviesAPI, Vidrock, VixSrc, Atlantic, Vidlove, Vidne
 the best direct, per-quality video link, ready to be handed to a player.
 They ship as one package, `streaming-sites`, for `stremio-tv-plugin-web-links`.
 
-Most sites need a real browser (see "Why browser automation" below); Cinezo
-MoviesAPI, Vidrock, VixSrc, Atlantic, Vidlove, Vidnest, Rivestream, LookMovie and Aether have open APIs and are plain HTTP.
+Four sites still need a real browser (Flixer, bCine, Movy, 7Movies); CineJoy
+and ShuttleTV speak their players' encrypted APIs directly (their WASM run
+standalone in Node), and Cinezo, MoviesAPI, Vidrock, VixSrc, Atlantic, Vidlove,
+Vidnest, Rivestream, LookMovie and Aether have open APIs. Those twelve are plain HTTP.
 
 ## Sites
 
 `dist/` is one package (`streaming-sites`) that exports sixteen scrapers, each registered by the
-host under its own id. Six sites work the same way (open a player URL keyed
-by TMDB id in a real browser, read the media URL the player requests); the
-seventh to sixteenth, Cinezo, MoviesAPI, Vidrock, VixSrc, Atlantic, Vidlove, Vidnest, Rivestream, LookMovie and Aether, ask their player's JSON API directly (an `HttpSite` instead of
-a `BrowserSite`, no Chromium involved). All share `src/shared.mts` (TMDB lookup, capture, playlist verification,
+host under its own id. Four sites (Flixer, bCine, Movy, 7Movies) open a player
+URL keyed by TMDB id in a real browser and read the media URL the player
+requests (a `BrowserSite`); the other twelve, CineJoy, ShuttleTV, Cinezo,
+MoviesAPI, Vidrock, VixSrc, Atlantic, Vidlove, Vidnest, Rivestream, LookMovie
+and Aether, ask their player's API directly (an `HttpSite`, no Chromium
+involved). The browser versions CineJoy and ShuttleTV used until 1.18.0 are
+kept, unexported, in `src/sites/archive/`. All share `src/shared.mts` (TMDB lookup, capture, playlist verification,
 best-stream picking) and each site is one small module in `src/sites/`.
 Every scraper's `search()` returns one row; `resolve()` tries all of that
 site's servers and returns the best resolution (stopping early on 2160p, or
@@ -28,11 +33,11 @@ and then.
 
 | Scraper | Player | Max quality seen | Notes |
 |---|---|---|---|
-| CineJoy | cinejoy.pk | 4K | Clicks through its server list; 4K on some titles (Oppenheimer, Superman 2025, GoT), 1080p on others. |
+| CineJoy | cinejoy.pk | 4K | No browser: seals each server request with the site's own `crush.wasm` (zero-import, run in Node) and AES-GCM-decrypts the answer. Lisbon is 4K on some titles (Superman 2025, Breaking Bad), Nebula 1080p. Referer alone. 0.5-4s. |
 | Flixer | flixer.gd | 1080p | Autoplays; WASM-derived stream. Often a single playlist with no stated resolution, 720p on TV. Some catalog gaps. Injects popunders. |
 | bCine | player.bciney.to | 1080p | 1080/720/360 masters; widescreen titles report e.g. 1920x800. |
 | Movy | movy.sx | 1080p | Needs Play clicks; popunder ads hijack the first ones. Playlist named for its resolution. |
-| ShuttleTV | cinesrc.st (shuttletv.su's player) | 4K | 4K only on Superman 2025; otherwise 1080p. Proof-of-work WASM. |
+| ShuttleTV | cinesrc.st (shuttletv.su's player) | 4K | No browser: rebuilds the page's two-part RSA/AES challenge (with its `pow-v3.wasm` proof and a fingerprint hash recovered from its JS VM) and ECDH-decrypts the answer (`src/cinesrc.mts`). Nebula 1080p, Lisbon up to 4K. 2-6s. |
 | 7Movies | embed.vidrift.net (7movies.ac's player) | 1080p | Slow or missing for some titles (Interstellar, Breaking Bad returned nothing). |
 | Cinezo | player.cinezo.live (arrowtv.net's player) | 1080p | No browser: `proxy1.flikhub.net` answers plain HTTP given the player's Referer/Origin. Only its `berlin` source (HLS) is used; 1-4s. Missing for some titles (The Godfather, Superman 2025 returned an upstream 502). |
 | MoviesAPI | moviesapi.to (PressPlay's backend) | 1080p | No browser: a plain JSON API with a static player key from its bundle; ~1s. Muxed 1080p, playlist and segments play with the Referer alone. Missing for some titles (Casablanca, Breaking Bad S1E2, The Last of Us: upstream 502/404). |
@@ -113,16 +118,20 @@ below. Pass `--all` (or `probeAll: true` to `resolveStreams()`) to keep going
 through every server instead of stopping at the first success, if you want
 every currently-working mirror rather than just one.
 
-## Why browser automation
+## Why browser automation (the legacy CLI)
+
+This section is about the standalone CLI below (`src/cinejoy.ts`). The
+`cinejoy` scraper itself no longer uses a browser: since 1.18.0 it runs
+`crush.wasm` in Node and talks to `api.wing.st/g` directly (STRATEGIES.md).
 
 cinejoy's search box is just a client-side call to TMDB's public API
 (`src/tmdb.ts` reproduces it directly, same embedded key their own frontend
 ships). Resolving an actual stream is a different story: cinejoy's backend
 (`api.wing.st`) returns the source data as ~176 bytes of encrypted binary
 from a `POST /g` call, decrypted client-side by a compiled WASM module
-(`crush.wasm`) before the player ever gets a URL. That pipeline is not
-practical to reimplement with plain HTTP requests -- it would mean reverse
-engineering a compiled cipher that can change without notice.
+(`crush.wasm`) before the player ever gets a URL. When the CLI was written
+that looked impractical to reimplement; it turned out the module can be run
+as a black box instead (see the scraper).
 
 Instead, `src/cinejoy.ts` drives a real headless Chromium via Playwright:
 it opens the watch page, selects each server in turn, and watches the
