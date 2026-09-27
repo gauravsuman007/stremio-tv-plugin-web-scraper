@@ -136,7 +136,9 @@ function heightFromUrl(url) {
 var BEST_POSSIBLE_HEIGHT = 2160;
 var SOFT_DEADLINE_MS = 1e4;
 var RESOLVE_DEADLINE_MS = 6e4;
-async function verifyCapture(site, { mediaUrl, label }, displayTitle, ctx) {
+async function verifyCapture(base, capture, displayTitle, ctx) {
+  const { mediaUrl, label } = capture;
+  const site = { ...base, referrer: capture.referrer ?? base.referrer, headers: capture.headers ?? base.headers };
   const variants = await expandMasterPlaylist(ctx.fetch, mediaUrl, mediaHeaders(site)).catch(() => null);
   const top = variants?.[0];
   if (!variants || !top) return null;
@@ -159,7 +161,7 @@ async function verifyCapture(site, { mediaUrl, label }, displayTitle, ctx) {
       quality: resolutions.length ? `${resolutions.join("/")} \xB7 ${label ?? site.name}` : height ? `${height}p \xB7 ${label ?? site.name}` : mirror,
       title: displayTitle,
       referrer: site.referrer,
-      ...site.headers ? { headers: site.headers } : {},
+      ...site.headers && Object.keys(site.headers).length ? { headers: site.headers } : {},
       ...height ? { height } : {}
     }
   };
@@ -244,24 +246,37 @@ async function candidatesFor(site, query, ctx, deadlineMs) {
   rememberLinks(site, result.candidates, query);
   return { match, ...result };
 }
+var inflight = /* @__PURE__ */ new Map();
+function sharedCandidates(site, query, ctx) {
+  const key = linkKey(site.id, query);
+  let run = inflight.get(key);
+  if (!run) {
+    run = candidatesFor(site, query, ctx, RESOLVE_DEADLINE_MS).catch(() => null).finally(() => inflight.delete(key));
+    inflight.set(key, run);
+  }
+  return run;
+}
 async function resolveSite(site, resolveId, query, ctx) {
   const cached = linkCache.get(linkKey(resolveId, query));
   if (cached && Date.now() - cached.at < LINK_MAX_AGE_MS && await stillPlays(cached.link, ctx)) return cached.link;
-  const found = await candidatesFor(site, query, ctx, RESOLVE_DEADLINE_MS);
+  let found = await sharedCandidates(site, query, ctx);
+  if (!found?.candidates.length && cached) found = await sharedCandidates(site, query, ctx);
   if (!found) return null;
   const label = resolveId.includes("~") ? resolveId.slice(resolveId.indexOf("~") + 1) : void 0;
   return (found.candidates.find((c) => label && c.label === label) ?? found.candidates[0])?.link ?? null;
 }
 var MAX_ROWS_PER_SITE = 3;
-var SEARCH_MARGIN_MS = 1500;
+var SEARCH_MARGIN_MS = 500;
 async function searchSite(site, query, ctx) {
   if (site.available && !await site.available(ctx).catch(() => false)) return [];
-  const found = await candidatesFor(site, query, ctx, Math.max(3e3, ctx.budgetMs - SEARCH_MARGIN_MS));
-  if (!found) return [];
-  const title = `${displayName(found.match)} \xB7 ${site.name}`;
-  if (!found.candidates.length) {
-    return found.complete ? [] : [{ url: "", resolveId: site.id, resolveKind: "hls", title }];
+  const budgetMs = Math.max(1e3, ctx.budgetMs - SEARCH_MARGIN_MS);
+  const found = await Promise.race([sharedCandidates(site, query, ctx), new Promise((r) => setTimeout(() => r("late"), budgetMs))]);
+  if (found === "late") {
+    const match = await resolveTmdbMatch(query, ctx.fetch).catch(() => null);
+    return match ? [{ url: "", resolveId: site.id, resolveKind: "hls", title: `${displayName(match)} \xB7 ${site.name}` }] : [];
   }
+  if (!found?.candidates.length) return [];
+  const title = `${displayName(found.match)} \xB7 ${site.name}`;
   const rows = [];
   const seen = /* @__PURE__ */ new Set();
   for (const [index, candidate] of found.candidates.entries()) {
@@ -344,7 +359,7 @@ var cinezo_default = createScraper(cinezoSite);
 
 // src/sites/bciney.mts
 var PLAYER2 = "https://player.bciney.to";
-var TIMEOUT_MS2 = 15e3;
+var TIMEOUT_MS2 = 3e4;
 function jsonArrayAfter(text, key) {
   const at = text.indexOf(key);
   if (at < 0) return null;
@@ -851,6 +866,20 @@ var vidnest_default = createScraper(vidnestSite);
 // src/sites/rivestream.mts
 var API7 = "https://scrapper.rivestream.app/api/provider";
 var API_TIMEOUT_MS8 = 2e4;
+var PROVIDERS3 = ["vanguard", "apex", "pulse"];
+function unwrap(url) {
+  try {
+    const params = new URL(url).searchParams;
+    const mediaUrl = params.get("url");
+    if (!mediaUrl) return { mediaUrl: url };
+    const sent = JSON.parse(params.get("headers") || "{}");
+    const referrer = sent.Referer ?? sent.referer;
+    const origin = sent.Origin ?? sent.origin;
+    return { mediaUrl, ...referrer ? { referrer } : {}, ...origin ? { headers: { Origin: origin } } : {} };
+  } catch {
+    return null;
+  }
+}
 var rivestreamSite = {
   id: "rivestream",
   name: "Rivestream",
@@ -859,19 +888,17 @@ var rivestreamSite = {
   maxQuality: "4K",
   async *httpCaptures({ match, season, episode }, ctx) {
     const query = match.mediaType === "movie" ? `id=${match.tmdbId}` : `id=${match.tmdbId}&season=${season ?? 1}&episode=${episode ?? 1}`;
-    const response = await ctx.fetch(`${API7}?provider=vanguard&${query}`, { signal: AbortSignal.timeout(API_TIMEOUT_MS8) });
-    if (!response.ok) return;
-    const body = await response.json();
-    for (const source of body.data?.sources ?? []) {
-      if (!source.url || source.format && source.format !== "hls") continue;
-      let mediaUrl = source.url;
-      try {
-        const wrapped = new URL(source.url).searchParams.get("url");
-        if (wrapped) mediaUrl = wrapped;
-      } catch {
-        continue;
+    const answers = PROVIDERS3.map(
+      (provider) => ctx.fetch(`${API7}?provider=${provider}&${query}`, { signal: AbortSignal.timeout(API_TIMEOUT_MS8) }).then((r) => r.ok ? r.json() : null).catch(() => null)
+    );
+    for (const [i, answer] of answers.entries()) {
+      for (const source of (await answer)?.data?.sources ?? []) {
+        if (!source.url || source.format && source.format !== "hls") continue;
+        const link = unwrap(source.url);
+        if (!link) continue;
+        const label = PROVIDERS3[i].replace(/^./, (c) => c.toUpperCase());
+        yield { ...link, headers: link.headers ?? (link.referrer ? {} : void 0), label };
       }
-      yield { mediaUrl, label: "Vanguard" };
     }
   }
 };
@@ -946,6 +973,7 @@ var lookmovie_default = createScraper(lookmovieSite);
 // src/sites/aetherlul.mts
 var API8 = "https://lul.aether.cx/";
 var API_TIMEOUT_MS10 = 2e4;
+var FRONT_END = "https://aether.ist/";
 var aetherlulSite = {
   id: "aetherlul",
   name: "Aether",
@@ -953,7 +981,7 @@ var aetherlulSite = {
   maxQuality: "1080p",
   async *httpCaptures({ match, season, episode }, ctx) {
     const path = match.mediaType === "movie" ? `movie/${match.tmdbId}` : `tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
-    const response = await ctx.fetch(`${API8}${path}`, { signal: AbortSignal.timeout(API_TIMEOUT_MS10) });
+    const response = await ctx.fetch(`${API8}${path}`, { headers: { Referer: FRONT_END }, signal: AbortSignal.timeout(API_TIMEOUT_MS10) });
     if (!response.ok) return;
     const body = await response.json();
     if (body.stream) yield { mediaUrl: body.stream, label: "Aether" };
@@ -1275,5 +1303,5 @@ var shuttletvSite = {
 var shuttletv_default = createScraper(shuttletvSite);
 
 // src/index.mts
-var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default].map((scraper) => ({ ...scraper, version: "1.20.0" }));
+var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default].map((scraper) => ({ ...scraper, version: "1.21.0" }));
 var index_default = scrapers;
