@@ -37,15 +37,15 @@ async function tmdbSearch(fetchImpl, query) {
   const response = await fetchImpl(url.toString());
   if (!response.ok) throw new Error(`TMDB search failed: ${response.status}`);
   const data = await response.json();
-  const results = [];
+  const results2 = [];
   for (const r of data.results) {
     if (r.media_type !== "movie" && r.media_type !== "tv") continue;
     const dateStr = r.media_type === "movie" ? r.release_date : r.first_air_date;
     const year = dateStr ? Number.parseInt(dateStr.slice(0, 4), 10) : null;
     const title = (r.media_type === "movie" ? r.title : r.name) || query;
-    results.push({ tmdbId: r.id, mediaType: r.media_type, title, year: Number.isFinite(year) ? year : null });
+    results2.push({ tmdbId: r.id, mediaType: r.media_type, title, year: Number.isFinite(year) ? year : null, originalLanguage: r.original_language });
   }
-  return results;
+  return results2;
 }
 async function tmdbFindByImdbId(fetchImpl, imdbId) {
   const url = new URL(`${TMDB_BASE}/find/${imdbId}`);
@@ -57,12 +57,12 @@ async function tmdbFindByImdbId(fetchImpl, imdbId) {
   const movie = data.movie_results[0];
   if (movie) {
     const year = movie.release_date ? Number.parseInt(movie.release_date.slice(0, 4), 10) : null;
-    return { tmdbId: movie.id, mediaType: "movie", title: movie.title || imdbId, year: Number.isFinite(year) ? year : null };
+    return { tmdbId: movie.id, mediaType: "movie", title: movie.title || imdbId, year: Number.isFinite(year) ? year : null, originalLanguage: movie.original_language };
   }
   const tv = data.tv_results[0];
   if (tv) {
     const year = tv.first_air_date ? Number.parseInt(tv.first_air_date.slice(0, 4), 10) : null;
-    return { tmdbId: tv.id, mediaType: "tv", title: tv.name || imdbId, year: Number.isFinite(year) ? year : null };
+    return { tmdbId: tv.id, mediaType: "tv", title: tv.name || imdbId, year: Number.isFinite(year) ? year : null, originalLanguage: tv.original_language };
   }
   return null;
 }
@@ -87,6 +87,28 @@ async function lookupTmdbMatch(query, fetchImpl) {
 function mediaHeaders(site) {
   return { Referer: site.referrer, ...site.headers };
 }
+var languageNames = new Intl.DisplayNames(["en"], { type: "language" });
+function languageName(code) {
+  const clean = code.trim();
+  if (!/^[a-z]{2,3}(-[a-z0-9]+)?$/i.test(clean)) return clean;
+  try {
+    const name = languageNames.of(clean);
+    return name && name !== clean ? name : clean;
+  } catch {
+    return clean;
+  }
+}
+function audioLanguages(master) {
+  const names = [];
+  for (const line of master.split(/\r?\n/)) {
+    if (!line.startsWith("#EXT-X-MEDIA:") || !/TYPE=AUDIO/.test(line)) continue;
+    const language = /LANGUAGE="([^"]+)"/.exec(line)?.[1];
+    const name = /NAME="([^"]+)"/.exec(line)?.[1];
+    const label = language ? languageName(language) : name && !/^(audio|default|main|stereo|und)\b/i.test(name) ? name : void 0;
+    if (label && !names.includes(label)) names.push(label);
+  }
+  return names;
+}
 async function expandMasterPlaylist(fetchImpl, masterUrl, headers2) {
   if (DIRECT_FILE_RE.test(masterUrl)) {
     const response2 = await fetchImpl(masterUrl, { headers: { ...headers2, Range: "bytes=0-1023" } });
@@ -100,6 +122,7 @@ async function expandMasterPlaylist(fetchImpl, masterUrl, headers2) {
   if (!text.includes("#EXT-X-STREAM-INF")) return [{ resolution: null, bandwidth: null, url: masterUrl }];
   const lines = text.split(/\r?\n/);
   const variants = [];
+  const audio = audioLanguages(text);
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (!line || !line.startsWith("#EXT-X-STREAM-INF")) continue;
@@ -110,7 +133,8 @@ async function expandMasterPlaylist(fetchImpl, masterUrl, headers2) {
     variants.push({
       resolution: resolutionMatch?.[1] ?? null,
       bandwidth: bandwidthMatch?.[1] ? Number.parseInt(bandwidthMatch[1], 10) : null,
-      url: new URL(uriLine, masterUrl).toString()
+      url: new URL(uriLine, masterUrl).toString(),
+      audio
     });
   }
   if (!variants.length) return [{ resolution: null, bandwidth: null, url: masterUrl }];
@@ -129,6 +153,8 @@ async function leafDuration(fetchImpl, url, headers2) {
 }
 function variantHeight(variant) {
   const [width = 0, height = 0] = (variant.resolution ?? "").split("x").map((n) => Number.parseInt(n, 10) || 0);
+  const exact = STANDARD_HEIGHTS.find((standard) => Math.abs(height - standard) <= standard * 0.05);
+  if (exact) return exact;
   const tall = Math.max(height, Math.round(width * 9 / 16));
   return STANDARD_HEIGHTS.find((standard) => tall >= standard * 0.95) ?? tall;
 }
@@ -139,7 +165,8 @@ function heightFromUrl(url) {
 var BEST_POSSIBLE_HEIGHT = 2160;
 var SOFT_DEADLINE_MS = 1e4;
 var RESOLVE_DEADLINE_MS = 6e4;
-async function verifyCapture(base, capture, displayTitle, ctx) {
+async function verifyCapture(base, capture, match, ctx) {
+  const displayTitle = displayName(match);
   const { mediaUrl, label } = capture;
   const site = { ...base, referrer: capture.referrer ?? base.referrer, headers: capture.headers ?? base.headers };
   const variants = await expandMasterPlaylist(ctx.fetch, mediaUrl, mediaHeaders(site)).catch(() => null);
@@ -150,7 +177,11 @@ async function verifyCapture(base, capture, displayTitle, ctx) {
     if (duration !== null && duration < MIN_PLAUSIBLE_DURATION_S) return null;
   }
   const height = Math.max(...variants.map(variantHeight)) || heightFromUrl(mediaUrl);
-  const score = height * 1e9 + Math.max(...variants.map((v) => v.bandwidth ?? 0));
+  const original = match.originalLanguage ? languageName(match.originalLanguage) : void 0;
+  const stated = (capture.audio?.length ? capture.audio : top.audio ?? []).map(languageName).sort((a, b) => Number(b === original) - Number(a === original));
+  const audio = stated.length ? stated : original ? [`${original} (assumed)`] : [];
+  const dubbed = Boolean(original && stated.length && !stated.includes(original));
+  const score = height * 1e9 + Math.max(...variants.map((v) => v.bandwidth ?? 0)) - (dubbed ? 5e8 : 0);
   const resolutions = variants.map((v) => v.resolution).filter((r) => Boolean(r));
   const multi = variants.length > 1;
   const mirror = label ? `${site.name} mirror: ${label}` : site.name;
@@ -165,11 +196,13 @@ async function verifyCapture(base, capture, displayTitle, ctx) {
       title: displayTitle,
       referrer: site.referrer,
       ...site.headers && Object.keys(site.headers).length ? { headers: site.headers } : {},
-      ...height ? { height } : {}
+      ...height ? { height } : {},
+      ...audio.length ? { audio } : {},
+      ...label ? { server: label } : {}
     }
   };
 }
-function collectCandidates(site, captures, displayTitle, ctx, deadlineMs) {
+function collectCandidates(site, captures, match, ctx, deadlineMs) {
   return new Promise((resolve) => {
     const startedAt = Date.now();
     const candidates = [];
@@ -199,7 +232,7 @@ function collectCandidates(site, captures, displayTitle, ctx, deadlineMs) {
           const step = await captures.next();
           if (step.done || finished) break;
           pending++;
-          void verifyCapture(site, step.value, displayTitle, ctx).catch(() => null).then((candidate) => {
+          void verifyCapture(site, step.value, match, ctx).catch(() => null).then((candidate) => {
             pending--;
             if (candidate && !finished) onCandidate(candidate);
             if (exhausted && pending === 0) finish(true);
@@ -245,9 +278,16 @@ async function candidatesFor(site, query, ctx, deadlineMs) {
   const match = await resolveTmdbMatch(query, ctx.fetch);
   if (!match) return null;
   const target = { match, season: query.season, episode: query.episode };
-  const result = await collectCandidates(site, site.httpCaptures(target, ctx), displayName(match), ctx, deadlineMs);
+  const result = await collectCandidates(site, site.httpCaptures(target, ctx), match, ctx, deadlineMs);
   rememberLinks(site, result.candidates, query);
+  if (result.complete) results.set(linkKey(site.id, query), { at: Date.now(), found: { match, ...result } });
   return { match, ...result };
+}
+var results = /* @__PURE__ */ new Map();
+function recentResult(site, query) {
+  const now = Date.now();
+  for (const [key, entry] of results) if (now - entry.at > LINK_MAX_AGE_MS) results.delete(key);
+  return results.get(linkKey(site.id, query))?.found;
 }
 var inflight = /* @__PURE__ */ new Map();
 function sharedCandidates(site, query, ctx) {
@@ -273,7 +313,7 @@ var SEARCH_MARGIN_MS = 500;
 async function searchSite(site, query, ctx) {
   if (site.available && !await site.available(ctx).catch(() => false)) return [];
   const budgetMs = Math.max(1e3, ctx.budgetMs - SEARCH_MARGIN_MS);
-  const found = await Promise.race([sharedCandidates(site, query, ctx), new Promise((r) => setTimeout(() => r("late"), budgetMs))]);
+  const found = recentResult(site, query) ?? await Promise.race([sharedCandidates(site, query, ctx), new Promise((r) => setTimeout(() => r("late"), budgetMs))]);
   if (found === "late") {
     const match = await resolveTmdbMatch(query, ctx.fetch).catch(() => null);
     return match ? [{ url: "", resolveId: site.id, resolveKind: "hls", title: `${displayName(match)} \xB7 ${site.name}` }] : [];
@@ -287,7 +327,16 @@ async function searchSite(site, query, ctx) {
     const resolveId = candidate.label ? `${site.id}~${candidate.label}` : site.id;
     if (seen.has(resolveId) || seen.has(candidate.link.url)) continue;
     seen.add(resolveId).add(candidate.link.url);
-    rows.push({ url: "", resolveId, resolveKind: "hls", title, quality: candidate.link.quality, ...candidate.height ? { height: candidate.height } : {} });
+    rows.push({
+      url: "",
+      resolveId,
+      resolveKind: "hls",
+      title,
+      quality: candidate.link.quality,
+      ...candidate.height ? { height: candidate.height } : {},
+      ...candidate.link.audio ? { audio: candidate.link.audio } : {},
+      ...candidate.label ? { server: candidate.label } : {}
+    });
     if (rows.length >= MAX_ROWS_PER_SITE) break;
   }
   return rows;
@@ -323,7 +372,12 @@ var sevenMoviesSite = {
         const mediaUrl = new URL(raw, BASE).href;
         if (seen.has(mediaUrl)) continue;
         seen.add(mediaUrl);
-        yield { mediaUrl, label: stream.provider || void 0 };
+        const language = /\u00b7\s*(.+)$/.exec(stream.name ?? "")?.[1]?.trim();
+        yield {
+          mediaUrl,
+          label: stream.name || stream.provider || void 0,
+          ...language && !/^original$/i.test(language) ? { audio: [language] } : {}
+        };
       }
     };
     const boot = await ctx.fetch(`${BASE}/api/boot/${path}?`, { headers: { ...headers2, "x-embed-parent": "" }, signal: AbortSignal.timeout(TIMEOUT_MS) }).then((r) => r.ok ? r.json() : null).catch(() => null);
@@ -925,14 +979,14 @@ var lookmovieSite = {
     const kind = match.mediaType === "movie" ? "movies" : "shows";
     const search = await getText(ctx, `${SITE5}api/v1/${kind}/do-search/?q=${encodeURIComponent(match.title)}`);
     if (!search) return;
-    let results;
+    let results2;
     try {
-      results = JSON.parse(search).result ?? [];
+      results2 = JSON.parse(search).result ?? [];
     } catch {
       return;
     }
     const wanted = normalise(match.title);
-    const hit = results.find((entry) => normalise(entry.title) === wanted && (!match.year || entry.year === match.year)) ?? results.find((entry) => normalise(entry.title) === wanted);
+    const hit = results2.find((entry) => normalise(entry.title) === wanted && (!match.year || entry.year === match.year)) ?? results2.find((entry) => normalise(entry.title) === wanted);
     if (!hit) return;
     const page = await getText(ctx, `${SITE5}${kind}/play/${hit.slug}`);
     if (!page) return;
@@ -1306,5 +1360,5 @@ var shuttletvSite = {
 var shuttletv_default = createScraper(shuttletvSite);
 
 // src/index.mts
-var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default].map((scraper) => ({ ...scraper, version: "1.21.1" }));
+var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default].map((scraper) => ({ ...scraper, version: "1.22.0" }));
 var index_default = scrapers;
