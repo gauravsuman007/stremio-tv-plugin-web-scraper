@@ -66,6 +66,15 @@ async function tmdbFindByImdbId(fetchImpl, imdbId) {
   }
   return null;
 }
+async function tmdbLocalizedTitle(fetchImpl, match, language) {
+  const url = new URL(`${TMDB_BASE}/${match.mediaType}/${match.tmdbId}`);
+  url.searchParams.set("api_key", TMDB_API_KEY);
+  url.searchParams.set("language", language);
+  const response = await fetchImpl(url.toString()).catch(() => null);
+  if (!response?.ok) return null;
+  const data = await response.json();
+  return data.title || data.name || null;
+}
 var MATCH_TTL_MS = 6e4;
 var matchCache = /* @__PURE__ */ new Map();
 function resolveTmdbMatch(query, fetchImpl) {
@@ -1359,6 +1368,455 @@ var shuttletvSite = {
 };
 var shuttletv_default = createScraper(shuttletvSite);
 
+// src/sites/xpass.mts
+var import_node_crypto6 = require("node:crypto");
+var SITE6 = "https://play.xpass.top";
+var BUILD = "spv3-build-1787821613-50e5fc97c9dce367";
+var TIMEOUT_MS7 = 15e3;
+var FAMILIES = [["VIP", 2], ["LUL", 2]];
+function decryptServers(body, path, token) {
+  const key = (0, import_node_crypto6.createHash)("sha256").update(`spv3-data-response|${BUILD}|${path}|${token}`).digest();
+  const data = Buffer.from(body.trim(), "base64url");
+  const decipher = (0, import_node_crypto6.createDecipheriv)("aes-256-gcm", key, data.subarray(0, 12));
+  decipher.setAuthTag(data.subarray(-16));
+  return JSON.parse(Buffer.concat([decipher.update(data.subarray(12, -16)), decipher.final()]).toString("utf8"));
+}
+async function getText2(ctx, url, referer) {
+  const response = await ctx.fetch(url, { headers: { Referer: referer }, signal: AbortSignal.timeout(TIMEOUT_MS7) });
+  return response.ok ? response.text() : null;
+}
+var xpassSite = {
+  id: "xpass",
+  name: "XPass",
+  referrer: `${SITE6}/`,
+  maxQuality: "1080p",
+  async *httpCaptures({ match, season, episode }, ctx) {
+    const embed = match.mediaType === "movie" ? `${SITE6}/e/movie/${match.tmdbId}` : `${SITE6}/e/tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
+    const page = await getText2(ctx, embed, `${SITE6}/`);
+    const dataUrl = page && /dataUrl="([^"]+)"/.exec(page)?.[1];
+    if (!dataUrl) return;
+    const url = new URL(dataUrl, SITE6);
+    const token = url.searchParams.get("token");
+    const body = token && await getText2(ctx, url.href, embed);
+    if (!body) return;
+    let servers;
+    try {
+      servers = decryptServers(body, url.pathname, token);
+    } catch {
+      return;
+    }
+    for (const [family, count] of FAMILIES) {
+      for (const server of servers.filter((entry) => entry.url && entry.name?.split(" ")[0] === family).slice(0, count)) {
+        const json = await getText2(ctx, new URL(server.url, SITE6).href, embed);
+        if (!json) continue;
+        let file;
+        try {
+          const parsed = JSON.parse(json);
+          file = parsed.playlist?.[0]?.sources?.find((source) => source.type === "hls")?.file;
+        } catch {
+          continue;
+        }
+        if (file?.startsWith("http")) yield { mediaUrl: file, label: server.name };
+      }
+    }
+  }
+};
+var xpass_default = createScraper(xpassSite);
+
+// src/byse.mts
+var import_node_crypto7 = require("node:crypto");
+var UA2 = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+var TIMEOUT_MS8 = 15e3;
+var POW_BUDGET_MS = 2e4;
+function byseEmbed(link) {
+  try {
+    const url = new URL(link);
+    const code = /^\/[edv]\/([a-z0-9]+)/i.exec(url.pathname)?.[1];
+    return code ? { origin: url.origin, code } : null;
+  } catch {
+    return null;
+  }
+}
+var rotl3 = (x, n) => (x << n | x >>> 32 - n) >>> 0;
+function quarter(s) {
+  s[0] = s[0] + s[1] >>> 0;
+  s[3] = rotl3(s[3] ^ s[0], 16);
+  s[2] = s[2] + s[3] >>> 0;
+  s[1] = rotl3(s[1] ^ s[2], 12);
+  s[0] = s[0] + s[1] >>> 0;
+  s[3] = rotl3(s[3] ^ s[0], 8);
+  s[2] = s[2] + s[3] >>> 0;
+  s[1] = rotl3(s[1] ^ s[2], 7);
+}
+var WORDS = 512;
+var MASK = WORDS - 1;
+function powHash(bytes) {
+  const s = new Uint32Array([1779033703, 3144134277, 1013904242, 2773480762]);
+  for (const byte of bytes) {
+    s[0] = rotl3(s[0] + byte >>> 0, 7);
+    quarter(s);
+  }
+  for (let i = 0; i < 8; i++) quarter(s);
+  const mem = new Uint32Array(WORDS);
+  for (let i = 0; i < WORDS; i++) {
+    quarter(s);
+    mem[i] = (s[0] ^ s[2]) >>> 0;
+  }
+  for (let round = 0; round < 2; round++) {
+    for (let i = 0; i < WORDS; i++) {
+      let c = rotl3(mem[i] + mem[mem[i] & MASK] >>> 0, 13);
+      c = (c ^ Math.imul(mem[i + 1 & MASK], 2654435761) >>> 0) >>> 0;
+      mem[i] = c;
+      s[0] = (s[0] ^ c) >>> 0;
+      quarter(s);
+    }
+  }
+  const out = new Uint32Array(8);
+  const lane = WORDS / 8;
+  for (let i = 0; i < 8; i++) {
+    quarter(s);
+    let acc = s[0];
+    for (let j = 0; j < lane; j++) {
+      const d = mem[i * lane + j];
+      acc = rotl3(acc + d >>> 0, 5);
+      acc = (acc ^ Math.imul(d, 2246822519) >>> 0) >>> 0;
+    }
+    out[i] = (acc ^ s[2]) >>> 0;
+  }
+  return out;
+}
+function leadingZeroBits(words) {
+  let bits = 0;
+  for (const word of words) {
+    if (word === 0) {
+      bits += 32;
+      continue;
+    }
+    return bits + Math.clz32(word);
+  }
+  return bits;
+}
+async function solvePow(nonce, difficulty) {
+  const started = Date.now();
+  for (let counter = 0; ; counter++) {
+    if (leadingZeroBits(powHash(Buffer.from(`${nonce}:${counter}`, "latin1"))) >= difficulty) return String(counter);
+    if (counter % 2048 === 2047) {
+      if (Date.now() - started > POW_BUDGET_MS) return null;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  }
+}
+var hash32 = () => (0, import_node_crypto7.randomBytes)(32).toString("base64url");
+function clientProfile() {
+  const version = "140.0.7339.133";
+  return {
+    user_agent: UA2,
+    architecture: "x86",
+    bitness: "64",
+    platform: "macOS",
+    platform_version: "10_15_7",
+    model: "",
+    ua_full_version: version,
+    brand_full_versions: [{ brand: "Chromium", version }, { brand: "Not=A?Brand", version: "24.0.0.0" }, { brand: "Google Chrome", version }],
+    pixel_ratio: 2,
+    screen_width: 1512,
+    screen_height: 982,
+    color_depth: 30,
+    languages: ["en-US", "en"],
+    timezone: "Europe/Berlin",
+    hardware_concurrency: 8,
+    device_memory: 8,
+    touch_points: 0,
+    webgl_vendor: "Google Inc. (Apple)",
+    webgl_renderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)",
+    canvas_hash: hash32(),
+    audio_hash: hash32(),
+    webgl_params_hash: hash32(),
+    fonts_hash: hash32(),
+    codecs_hash: hash32(),
+    media_devices: "ai1ao1vi1",
+    pointer_type: "fine,hover",
+    extra: { vendor: "Google Inc.", appVersion: UA2.slice("Mozilla/".length) }
+  };
+}
+function openPlayback(sealed) {
+  const version = Number(sealed.version);
+  const picked = version >= 1 && version <= 20 && 31 - version <= sealed.key_parts.length ? [sealed.key_parts[version - 1], sealed.key_parts[31 - version - 1]] : sealed.key_parts;
+  const key = Buffer.concat(picked.map((part) => Buffer.from(part, "base64url")));
+  const data = Buffer.from(sealed.payload, "base64url");
+  const decipher = (0, import_node_crypto7.createDecipheriv)(key.length === 16 ? "aes-128-gcm" : "aes-256-gcm", key, Buffer.from(sealed.iv, "base64url"));
+  decipher.setAuthTag(data.subarray(-16));
+  return JSON.parse(Buffer.concat([decipher.update(data.subarray(0, -16)), decipher.final()]).toString("utf8"));
+}
+async function resolveByse(embedLink, embedReferer, ctx) {
+  const embed = byseEmbed(embedLink);
+  if (!embed) return [];
+  const { origin, code } = embed;
+  const headers2 = {
+    "User-Agent": UA2,
+    Referer: embedReferer,
+    Origin: origin,
+    "Content-Type": "application/json",
+    "X-Embed-Origin": new URL(embedReferer).host,
+    "X-Embed-Parent": `${origin}/e/${code}`,
+    "X-Embed-Referer": embedReferer
+  };
+  const post = async (path, body, extra = {}) => {
+    const response = await ctx.fetch(`${origin}/api/videos/${path}`, {
+      method: "POST",
+      headers: { ...headers2, ...extra },
+      body: body === void 0 ? void 0 : JSON.stringify(body),
+      signal: AbortSignal.timeout(TIMEOUT_MS8)
+    });
+    if (!response.ok) return null;
+    try {
+      return await response.json();
+    } catch {
+      return null;
+    }
+  };
+  const challenge = await post("access/challenge");
+  if (!challenge?.challenge_id || !challenge.nonce) return [];
+  const keys = await import_node_crypto7.webcrypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  const signature = Buffer.from(await import_node_crypto7.webcrypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, keys.privateKey, Buffer.from(challenge.nonce))).toString("base64url");
+  const jwk = await import_node_crypto7.webcrypto.subtle.exportKey("jwk", keys.publicKey);
+  const attest = await post("access/attest", {
+    viewer_id: "",
+    device_id: "",
+    challenge_id: challenge.challenge_id,
+    nonce: challenge.nonce,
+    signature,
+    public_key: { crv: jwk.crv, ext: true, key_ops: ["verify"], kty: jwk.kty, x: jwk.x, y: jwk.y },
+    client: clientProfile(),
+    storage: {},
+    attributes: { entropy: "high" }
+  });
+  if (!attest?.token) return [];
+  const fingerprint = { token: attest.token, viewer_id: attest.viewer_id, device_id: attest.device_id, confidence: attest.confidence };
+  headers2.Cookie = `byse_viewer_id=${attest.viewer_id}; byse_device_id=${attest.device_id}`;
+  const pow = await post(`${code}/embed/captcha`, { fingerprint });
+  if (!pow?.pow_nonce || !pow.pow_token) return [];
+  const solution = await solvePow(pow.pow_nonce, pow.pow_difficulty ?? 16);
+  if (solution === null) return [];
+  const verified = await post(`${code}/embed/captcha/verify`, { pow_token: pow.pow_token, solution, fingerprint });
+  if (!verified?.token) return [];
+  const answer = await post(`${code}/embed/playback`, { fingerprint }, { "X-Captcha-Token": verified.token });
+  if (!answer?.playback?.key_parts?.length) return [];
+  let playback;
+  try {
+    playback = openPlayback(answer.playback);
+  } catch {
+    return [];
+  }
+  return (playback.sources ?? []).filter((source) => source.url && (source.mime_type?.includes("mpegurl") || /\.m3u8(\?|$)/.test(source.url))).map((source) => ({ url: source.url, label: source.label, referrer: `${origin}/` }));
+}
+
+// src/sites/arc018.mts
+var SITE7 = "https://arc018.stream/";
+var TIMEOUT_MS9 = 15e3;
+var slugify = (title) => title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+async function getText3(ctx, url, referer = SITE7) {
+  const response = await ctx.fetch(url, { headers: { Referer: referer }, signal: AbortSignal.timeout(TIMEOUT_MS9) });
+  return response.ok ? response.text() : null;
+}
+async function findSlug(ctx, title, year, kind) {
+  const guess = `${slugify(title)}-${year ?? ""}-watch-online`;
+  const direct = await ctx.fetch(`${SITE7}watch-${kind}/${guess}/`, { method: "HEAD", signal: AbortSignal.timeout(TIMEOUT_MS9) }).catch(() => null);
+  if (direct?.ok) return guess;
+  const search = await getText3(ctx, `${SITE7}search?q=${encodeURIComponent(title)}`);
+  if (!search) return null;
+  const wanted = slugify(title);
+  for (const [, slug] of search.matchAll(new RegExp(`/watch-${kind}/([a-z0-9-]+-watch-online)/`, "g"))) {
+    const [, name, found] = /^(.*)-(\d{4})-watch-online$/.exec(slug) ?? [];
+    if (name === wanted && (!year || Number(found) === year)) return slug;
+  }
+  return null;
+}
+async function vidmoly(ctx, link) {
+  const page = await getText3(ctx, link);
+  const mediaUrl = page && /sources:\s*\[\{\s*file:\s*'([^']+\.m3u8[^']*)'/.exec(page)?.[1];
+  return mediaUrl ? { mediaUrl, label: "Vidmoly", referrer: `${new URL(link).origin}/` } : null;
+}
+var arc018Site = {
+  id: "arc018",
+  name: "arc018",
+  referrer: SITE7,
+  maxQuality: "1080p",
+  async *httpCaptures({ match, season, episode }, ctx) {
+    const movie = match.mediaType === "movie";
+    const slug = await findSlug(ctx, match.title, match.year, movie ? "movie" : "series");
+    if (!slug) return;
+    const pad = (n) => String(n ?? 1).padStart(2, "0");
+    const page = await getText3(ctx, movie ? `${SITE7}watch-movie/${slug}/` : `${SITE7}episode/${slug}/s${pad(season)}-e${pad(episode)}/`);
+    const token = page && /data-token="([^"]+)"/.exec(page)?.[1];
+    if (!token) return;
+    const form = new FormData();
+    form.append(movie ? "players" : "players_show", token);
+    const response = await ctx.fetch(`${SITE7}ajax/ajax.php`, { method: "POST", body: form, headers: { Referer: SITE7 }, signal: AbortSignal.timeout(TIMEOUT_MS9) });
+    if (!response.ok) return;
+    let servers;
+    try {
+      const body = await response.json();
+      servers = Array.isArray(body) ? body : [body];
+    } catch {
+      return;
+    }
+    for (const server of servers) {
+      if (!server.link) continue;
+      if (byseEmbed(server.link)) {
+        for (const source of await resolveByse(server.link, SITE7, ctx)) {
+          yield { mediaUrl: source.url, label: "Byse", referrer: source.referrer };
+        }
+      } else if (/kaembed|vidmoly/.test(server.link)) {
+        const capture = await vidmoly(ctx, server.link);
+        if (capture) yield capture;
+      }
+    }
+  }
+};
+var arc018_default = createScraper(arc018Site);
+
+// src/voe.mts
+var UA3 = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+var TIMEOUT_MS10 = 15e3;
+var JUNK = ["@$", "^^", "~@", "%?", "*~", "!!", "#&"];
+function rot13(text) {
+  return text.replace(/[a-zA-Z]/g, (c) => {
+    const base = c <= "Z" ? 65 : 97;
+    return String.fromCharCode((c.charCodeAt(0) - base + 13) % 26 + base);
+  });
+}
+function decodeVoeConfig(encoded) {
+  try {
+    let text = rot13(encoded);
+    for (const junk of JUNK) text = text.split(junk).join("");
+    text = Buffer.from(text, "base64").toString("latin1");
+    text = Array.from(text, (c) => String.fromCharCode(c.charCodeAt(0) - 3)).reverse().join("");
+    return JSON.parse(Buffer.from(text, "base64").toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+async function getPage(ctx, url, referer) {
+  const response = await ctx.fetch(url, { headers: { "User-Agent": UA3, Referer: referer }, signal: AbortSignal.timeout(TIMEOUT_MS10) });
+  return response.ok ? { html: await response.text(), url: response.url || url } : null;
+}
+async function resolveVoe(embedLink, embedReferer, ctx) {
+  let page = await getPage(ctx, embedLink, embedReferer);
+  const hop = page && !page.html.includes('type="application/json"') ? /window\.location\.href\s*=\s*'([^']+)'/.exec(page.html)?.[1] : void 0;
+  if (hop) page = await getPage(ctx, hop, embedReferer);
+  if (!page) return null;
+  const blob = /<script type="application\/json">([^<]+)<\/script>/.exec(page.html)?.[1];
+  if (!blob) return null;
+  let encoded;
+  try {
+    encoded = JSON.parse(blob);
+  } catch {
+    return null;
+  }
+  const first = Array.isArray(encoded) ? encoded[0] : encoded;
+  if (typeof first !== "string") return null;
+  const source = decodeVoeConfig(first)?.source;
+  return source ? { url: source, referrer: `${new URL(page.url).origin}/` } : null;
+}
+
+// src/sites/filmo.mts
+var SITE8 = "https://filmo.to/";
+var TIMEOUT_MS11 = 15e3;
+var LANGUAGES = { English: "English", Deutsch: "German" };
+var normalise2 = (text) => text.toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9äöüß]+/g, "");
+var Session = class {
+  constructor(ctx) {
+    this.ctx = ctx;
+  }
+  cookies = /* @__PURE__ */ new Map();
+  async fetch(url, init = {}) {
+    const headers2 = new Headers(init.headers);
+    if (this.cookies.size) headers2.set("Cookie", [...this.cookies].map(([k, v]) => `${k}=${v}`).join("; "));
+    const response = await this.ctx.fetch(url, { ...init, headers: headers2, signal: AbortSignal.timeout(TIMEOUT_MS11) });
+    for (const line of response.headers.getSetCookie?.() ?? []) {
+      const [pair] = line.split(";");
+      const at = pair.indexOf("=");
+      if (at > 0) this.cookies.set(pair.slice(0, at).trim(), pair.slice(at + 1).trim());
+    }
+    return response;
+  }
+};
+function parseChips(page) {
+  const chips = [];
+  for (const row of page.split('provider-row__lang">').slice(1)) {
+    const language = row.slice(0, row.indexOf("<")).trim();
+    const body = row.split("provider-row__lang")[0];
+    for (const [, p, host] of body.matchAll(/data-p="([^"]+)"[\s\S]*?aria-label="([^"]+)"/g)) chips.push({ language, host, p });
+  }
+  return chips;
+}
+async function findMoviePage(session, titles, year) {
+  for (const title of titles) {
+    const response = await session.fetch(`${SITE8}search/suggest?q=${encodeURIComponent(title)}`, { headers: { Accept: "application/json" } });
+    if (!response.ok) continue;
+    let movies;
+    try {
+      movies = (await response.json()).movies ?? [];
+    } catch {
+      continue;
+    }
+    for (const movie of movies.filter((entry) => entry.url && normalise2(entry.title ?? "") === normalise2(title))) {
+      const page = await session.fetch(movie.url);
+      if (!page.ok) continue;
+      const html = await page.text();
+      if (!year || html.includes(`>${year}<`)) return html;
+    }
+  }
+  return null;
+}
+var filmoSite = {
+  id: "filmo",
+  name: "Filmo",
+  referrer: SITE8,
+  maxQuality: "1080p",
+  async *httpCaptures({ match }, ctx) {
+    if (match.mediaType !== "movie") return;
+    const session = new Session(ctx);
+    const german = await tmdbLocalizedTitle(ctx.fetch, match, "de-DE");
+    const page = await findMoviePage(session, [...new Set([match.title, german].filter((t) => !!t))], match.year);
+    const csrf = page && /name="csrf-token" content="([^"]+)"/.exec(page)?.[1];
+    if (!csrf) return;
+    for (const chip of parseChips(page)) {
+      const host = chip.host.toLowerCase();
+      if (host !== "voe" && host !== "byse") continue;
+      const minted = await session.fetch(`${SITE8}n`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json", "X-CSRF-TOKEN": csrf, "X-Requested-With": "XMLHttpRequest", Referer: SITE8 },
+        body: JSON.stringify({ p: chip.p })
+      });
+      if (!minted.ok) continue;
+      let token;
+      try {
+        token = (await minted.json()).x;
+      } catch {
+        continue;
+      }
+      if (!token) continue;
+      const opened = await session.fetch(`${SITE8}n/${encodeURIComponent(token)}`, { redirect: "manual", headers: { Referer: SITE8 } });
+      const target = opened.headers.get("location") ?? /class="open" href="([^"]+)"/.exec(await opened.text())?.[1];
+      if (!target) continue;
+      const audio = [LANGUAGES[chip.language] ?? chip.language];
+      if (host === "voe") {
+        const voe = await resolveVoe(target, SITE8, ctx);
+        if (voe) yield { mediaUrl: voe.url, label: `VOE ${audio[0]}`, referrer: voe.referrer };
+      } else {
+        const embed = byseEmbed(target);
+        if (!embed) continue;
+        for (const source of await resolveByse(`${embed.origin}/e/${embed.code}`, SITE8, ctx)) {
+          yield { mediaUrl: source.url, label: `Byse ${audio[0]}`, referrer: source.referrer, audio };
+        }
+      }
+    }
+  }
+};
+var filmo_default = createScraper(filmoSite);
+
 // src/index.mts
-var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default].map((scraper) => ({ ...scraper, version: "1.22.0" }));
+var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default, xpass_default, arc018_default, filmo_default].map((scraper) => ({ ...scraper, version: "1.23.0" }));
 var index_default = scrapers;
