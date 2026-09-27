@@ -29,7 +29,7 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | scrapper.rivestream.app | implemented | Shipped in 1.15.0 (`rivestream`, provider `vanguard` = 4K HDR cinejoy CDN, plain JSON). Found by watching P-Stream. `pulse`/`apex` returned null. See STRATEGIES.md. |
 | www.lookmovie2.to | implemented | Shipped in 1.15.0 (`lookmovie`). Search -> play page (hash, expires) -> access API; mostly 480p; TV works. Found by watching P-Stream. See STRATEGIES.md. |
 | lul.aether.cx | implemented | Shipped in 1.16.0 (`aetherlul`). Plain HTTP backend of the Aether P-Stream fork: {stream: url} on cflul.ax5.workers.dev, no headers needed anywhere. 7/10 titles. Found by watching P-Stream. See STRATEGIES.md. |
-| api.speedracelight.com | possible | Used by P-Stream (`{hdmovie,cdn,lamovie,meine}/sources-with-title?...&enc=2&seed=` after `/seed?mediaId=`). Returns an encrypted blob; the decryption scheme is not visible from outside and lives in the blocked library, so not pursued. `lamovie`/`meine` 500. |
+| api.speedracelight.com | possible | Used by P-Stream (`{hdmovie,cdn,lamovie,meine}/sources-with-title?...&enc=2&seed=` after `/seed?mediaId=`). Returns an encrypted blob; the decryption scheme is not visible from outside and lives in the blocked library, so not pursued. `lamovie`/`meine` 500. | 2026-09-27 lead: movy's `api.wecollege.net` uses the identical `/seed` + `enc=2&seed=` scheme, and its keystream is now ported (`src/sites/movy.mts`) -- very likely the same decryption; retry with it.
 | vidzee (player.vidzee.wtf / core.vidzee.wtf) | rejected | Redundant: its working output is vidrock's (Atlas CDN, whose segments are 403 "domain forbidden") and vidnest's MKV route. |
 | vidlink.pro | possible | Id minted by a Go WASM module (`fu.wasm` + libsodium); streams are moviebox MP4 files via `noon.mooncase.online`. Needs a BrowserSite and MP4/`file` support in `pickBestCapture`. Low priority. See STRATEGIES.md. |
 | videasy.net / videasy.to | untriaged | Direct embed captured nothing in 24s; loading player.videasy.to directly gets 403 (checks the caller). Via vidnest it resolves to the nextgencloudfabric CDN with signed segments that answered 403. Watching a P-Stream fork (basementx.lol) that embeds it: the real master (moon.quietridge.top/vd/.../index-s2160p...m3u8, full length, 2160p) plays with Origin/Referer player.videasy.to, but the fork reaches it through its own backend (be.basementx.lol / dim.basementx.lol), which signs a `sig`+`exp` per request -- not reproducible without that private key. Not a candidate. |
@@ -51,12 +51,12 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | [LookMovie, 2](https://lookmovie2.to/) | dedicated-server | lookmovie (LookMovie) -- 1.15.0; plain HTTP, mostly 480p |
 | [PressPlay](https://pressplayz.to/) | dedicated-server | covered by MoviesAPI: it only iframes moviesapi.to / vidspark.to / vidfast.pro |
 | [Streaming Unity](https://streamingunity.vip/) | dedicated-server | covered by VixSrc (its front-end) |
-| [7Movies](https://7movies.ac/) | stream-aggregators | sevenMovies |
+| [7Movies](https://7movies.ac/) | stream-aggregators | sevenMovies -- plain HTTP (embed.vidrift.net boot/source API) since 1.19.0 |
 | [ArrowTV, 2 or Cinezo, 2](https://arrowtv.net/) | stream-aggregators | cinezo (Cinezo) |
-| [bCine](https://bcine.ru/) | stream-aggregators | bciney |
+| [bCine](https://bcine.ru/) | stream-aggregators | bciney -- plain HTTP (servers in the embed page's flight data) since 1.19.0 |
 | [Cinejoy](https://cinejoy.pk/) | stream-aggregators | cinejoy -- plain HTTP (crush.wasm in Node) since 1.18.0 |
-| [Flixer, 2, 3 or Hexa](https://flixer.gd) | stream-aggregators | flixer |
-| [Movy](https://www.movy.sx/) | stream-aggregators | movy |
+| [Flixer, 2, 3 or Hexa](https://flixer.gd) | stream-aggregators | flixer -- plain HTTP (signed API, AES-GCM key schedule of img_data_bg.wasm rebuilt) since 1.19.0 |
+| [Movy](https://www.movy.sx/) | stream-aggregators | movy -- plain HTTP (api.wecollege.net, seed keystream ported) since 1.19.0 |
 | [Rive, 2, 3 or CorsFlix, 2, 3](https://www.rivestream.app/) | stream-aggregators | rivestream (Rivestream) -- 1.15.0; its scraper API is plain JSON (the Turnstile is only on the site UI) |
 | [ShuttleTV, 2, 3](https://shuttletv.su/) | stream-aggregators | shuttletv -- plain HTTP (cinesrc protocol, src/cinesrc.mts) since 1.18.0 |
 

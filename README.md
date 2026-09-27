@@ -5,21 +5,22 @@ ShuttleTV, 7Movies, Cinezo, MoviesAPI, Vidrock, VixSrc, Atlantic, Vidlove, Vidne
 the best direct, per-quality video link, ready to be handed to a player.
 They ship as one package, `streaming-sites`, for `stremio-tv-plugin-web-links`.
 
-Four sites still need a real browser (Flixer, bCine, Movy, 7Movies); CineJoy
-and ShuttleTV speak their players' encrypted APIs directly (their WASM run
-standalone in Node), and Cinezo, MoviesAPI, Vidrock, VixSrc, Atlantic, Vidlove,
-Vidnest, Rivestream, LookMovie and Aether have open APIs. Those twelve are plain HTTP.
+No site needs a browser any more (since 1.19.0). CineJoy, ShuttleTV, Flixer
+and Movy speak their players' encrypted APIs directly (the crypto rebuilt in
+Node, or a zero-import WASM run standalone), bCine's stream is in its embed
+page's HTML, 7Movies' player API is plain JSON, and Cinezo, MoviesAPI, Vidrock,
+VixSrc, Atlantic, Vidlove, Vidnest, Rivestream, LookMovie and Aether have open
+APIs. All sixteen are plain HTTP.
 
 ## Sites
 
 `dist/` is one package (`streaming-sites`) that exports sixteen scrapers, each registered by the
-host under its own id. Four sites (Flixer, bCine, Movy, 7Movies) open a player
-URL keyed by TMDB id in a real browser and read the media URL the player
-requests (a `BrowserSite`); the other twelve, CineJoy, ShuttleTV, Cinezo,
-MoviesAPI, Vidrock, VixSrc, Atlantic, Vidlove, Vidnest, Rivestream, LookMovie
-and Aether, ask their player's API directly (an `HttpSite`, no Chromium
-involved). The browser versions CineJoy and ShuttleTV used until 1.18.0 are
-kept, unexported, in `src/sites/archive/`. All share `src/shared.mts` (TMDB lookup, capture, playlist verification,
+host under its own id. Every one asks its player's API directly (an
+`HttpSite`, no Chromium involved). The browser-driven versions (`BrowserSite`s
+that opened the player in Chromium and read the media URL it requested) are
+kept, unexported, in `src/sites/archive/`: CineJoy and ShuttleTV until 1.18.0,
+Flixer, bCine, Movy and 7Movies until 1.19.0. `BrowserSite` itself is still
+supported by `src/shared.mts` for a site that genuinely needs it. All share `src/shared.mts` (TMDB lookup, capture, playlist verification,
 best-stream picking) and each site is one small module in `src/sites/`.
 Every scraper's `search()` returns one row; `resolve()` tries all of that
 site's servers and returns the best resolution (stopping early on 2160p, or
@@ -34,11 +35,11 @@ and then.
 | Scraper | Player | Max quality seen | Notes |
 |---|---|---|---|
 | CineJoy | cinejoy.pk | 4K | No browser: seals each server request with the site's own `crush.wasm` (zero-import, run in Node) and AES-GCM-decrypts the answer. Lisbon is 4K on some titles (Superman 2025, Breaking Bad), Nebula 1080p. Referer alone. 0.5-4s. |
-| Flixer | flixer.gd | 1080p | Autoplays; WASM-derived stream. Often a single playlist with no stated resolution, 720p on TV. Some catalog gaps. Injects popunders. |
-| bCine | player.bciney.to | 1080p | 1080/720/360 masters; widescreen titles report e.g. 1920x800. |
-| Movy | movy.sx | 1080p | Needs Play clicks; popunder ads hijack the first ones. Playlist named for its resolution. |
+| Flixer | flixer.gd | 1080p | No browser: signs each request with an HMAC under a random key and AES-256-GCM-decrypts the answer, with the key schedule its `img_data_bg.wasm` uses (rebuilt in Node; that module has imports, so it is not run). Eight NATO-named servers asked in parallel; some give a single playlist, `delta` a 1080/720/360 master. 720p on TV. 6-9s. |
+| bCine | player.bciney.to | 1080p | No browser: the embed page's Next.js flight data lists its servers (`initialServers`). 1080/720/360 masters; widescreen titles report e.g. 1920x800. ~10s (the proxied playlists are slow to verify). |
+| Movy | movy.sx | 1080p | No browser: `api.wecollege.net/<city>/sources?enc=2&seed=`, XORed with a keystream the page's JS derives from the seed and tmdb id (ported). miami/boise give single playlists named for their resolution, paris a master. 2-15s; its CDN is sometimes slow. |
 | ShuttleTV | cinesrc.st (shuttletv.su's player) | 4K | No browser: rebuilds the page's two-part RSA/AES challenge (with its `pow-v3.wasm` proof and a fingerprint hash recovered from its JS VM) and ECDH-decrypts the answer (`src/cinesrc.mts`). Nebula 1080p, Lisbon up to 4K. 2-6s. |
-| 7Movies | embed.vidrift.net (7movies.ac's player) | 1080p | Slow or missing for some titles (Interstellar, Breaking Bad returned nothing). |
+| 7Movies | embed.vidrift.net (7movies.ac's player) | 1080p | No browser: `api/boot` gives a playback token and pre-resolved streams, `api/source?provider=` the rest (moviebox HEVC 1080p, vaplayer, vidlove, vidrock), plus Evion when the boot names it. Needs HEVC for moviebox. Not every title (Breaking Bad: "not available"). 10-15s. |
 | Cinezo | player.cinezo.live (arrowtv.net's player) | 1080p | No browser: `proxy1.flikhub.net` answers plain HTTP given the player's Referer/Origin. Only its `berlin` source (HLS) is used; 1-4s. Missing for some titles (The Godfather, Superman 2025 returned an upstream 502). |
 | MoviesAPI | moviesapi.to (PressPlay's backend) | 1080p | No browser: a plain JSON API with a static player key from its bundle; ~1s. Muxed 1080p, playlist and segments play with the Referer alone. Missing for some titles (Casablanca, Breaking Bad S1E2, The Last of Us: upstream 502/404). |
 | Vidrock | vidrock.net | 1080p | No browser: its API returns AES-GCM-encrypted server URLs (key in its bundle). Uses the Orion and Luna servers; both need an `Origin` header, sent via `WebLink.headers` (needs web-links >= 0.9.0). 2-4s. |
