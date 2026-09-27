@@ -208,18 +208,23 @@ export async function captureMediaUrl(
 }
 
 
+/** The headers the site's media hosts want: its Referer plus any extras (see `SiteBase.headers`). */
+function mediaHeaders(site: { referrer: string; headers?: Record<string, string> }): Record<string, string> {
+    return { Referer: site.referrer, ...site.headers };
+}
+
 async function expandMasterPlaylist(
     fetchImpl: ScraperContext["fetch"],
     masterUrl: string,
-    referrer: string
+    headers: Record<string, string>
 ): Promise<{ resolution: string | null; bandwidth: number | null; url: string }[]> {
     if (DIRECT_FILE_RE.test(masterUrl)) {
-        const response = await fetchImpl(masterUrl, { headers: { Referer: referrer, Range: "bytes=0-1023" } });
+        const response = await fetchImpl(masterUrl, { headers: { ...headers, Range: "bytes=0-1023" } });
         if (!response.ok) throw new Error(`direct file not fetchable: ${response.status}`);
         return [{ resolution: null, bandwidth: null, url: masterUrl }];
     }
 
-    const response = await fetchImpl(masterUrl, { headers: { Referer: referrer } });
+    const response = await fetchImpl(masterUrl, { headers });
     if (!response.ok) throw new Error(`master playlist not fetchable: ${response.status}`);
 
     const text = await response.text();
@@ -260,8 +265,8 @@ const MIN_PLAUSIBLE_DURATION_S = 300;
  * playlist for a title they don't have -- a ~90s clip whose segments are
  * really PNGs -- which passes a plain "is it HLS" check.
  */
-async function leafDuration(fetchImpl: ScraperContext["fetch"], url: string, referrer: string): Promise<number | null> {
-    const response = await fetchImpl(url, { headers: { Referer: referrer } });
+async function leafDuration(fetchImpl: ScraperContext["fetch"], url: string, headers: Record<string, string>): Promise<number | null> {
+    const response = await fetchImpl(url, { headers });
     if (!response.ok) throw new Error(`playlist not fetchable: ${response.status}`);
     const text = await response.text();
     if (!text.includes("#EXT-X-ENDLIST") && !text.includes("#EXT-X-PLAYLIST-TYPE:VOD")) return null;
@@ -305,6 +310,11 @@ interface SiteBase {
     name: string;
     /** Referer the site's media hosts expect. */
     referrer: string;
+    /** Extra request headers the media hosts need beyond the Referer -- chiefly
+     *  `Origin`, which some CDNs require too. Sent on this adapter's own
+     *  playlist checks and set on the returned link so the host's relay sends
+     *  them on every playlist and segment fetch (needs web-links >= 0.9.0). */
+    headers?: Record<string, string>;
     /** The best resolution seen across the titles this adapter was tested on
      *  (see README.md). Shown in the scraper's name on the plugins page. */
     maxQuality: string;
@@ -456,7 +466,7 @@ async function pickBestCapture(
 
             let variants;
             try {
-                variants = await expandMasterPlaylist(ctx.fetch, mediaUrl, site.referrer);
+                variants = await expandMasterPlaylist(ctx.fetch, mediaUrl, mediaHeaders(site));
             } catch {
                 continue; // dead/blocked mirror -- try the next one.
             }
@@ -465,7 +475,7 @@ async function pickBestCapture(
             if (!top) continue;
 
             if (!DIRECT_FILE_RE.test(top.url)) {
-                const duration = await leafDuration(ctx.fetch, top.url, site.referrer).catch(() => 0);
+                const duration = await leafDuration(ctx.fetch, top.url, mediaHeaders(site)).catch(() => 0);
                 if (duration !== null && duration < MIN_PLAUSIBLE_DURATION_S) continue; // a stub, not the title.
             }
 
@@ -503,7 +513,8 @@ async function pickBestCapture(
                           ? `${height}p · ${label ?? site.name}`
                           : mirror,
                     title: displayTitle,
-                    referrer: site.referrer
+                    referrer: site.referrer,
+                    ...(site.headers ? { headers: site.headers } : {})
                 }
             };
 

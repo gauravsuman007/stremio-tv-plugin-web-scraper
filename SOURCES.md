@@ -11,7 +11,7 @@ Every source considered for this bundle, so the list can be worked through. The 
 
 Sources: the *Stream Aggregators*, *Dedicated-Server*, *Multi-Server* and *P-Stream Forks* sections of <https://fmhy.net/video> (checked 2026-09-27), plus atlantic.st, nepu.io, ee3.me and pressplayz.to supplied directly. Triage was a single homepage fetch per site (status, Cloudflare/Turnstile markers, sign-in redirect) plus a scan of its JS bundles for the upstream players it references.
 
-Totals: implemented 8, candidate 1, blocked 1, possible 0, untriaged 104, rejected 49 (163 sites).
+Totals: implemented 9, candidate 1, blocked 0, possible 0, untriaged 104, rejected 49 (163 sites).
 
 ## Upstream players (where the leverage is)
 
@@ -21,8 +21,8 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 |---|---|---|
 | player.cinezo.live / proxy1.flikhub.net | implemented | Cinezo scraper. HTTP only. |
 | moviesapi.to / vidspark.to | implemented | Shipped in 1.12.0. Best find: real 1080p, static `x-player-key`, plain JSON API. Also the backend of PressPlay and vidnest `vidxyz`. See STRATEGIES.md. |
-| vixsrc.to | blocked | Video leaves have no audio; audio is a separate EXT-X-MEDIA playlist the host mis-rewrites. Pure HTTP; tokenised master from the embed page. Italian-first catalogue. Backend of Streaming Unity. See STRATEGIES.md. |
-| vidrock.net | blocked | Orion/Luna 403 without an Origin header, which the host never sends. Pure HTTP; AES-GCM with a key in the bundle; use servers Orion (1080p) and Luna, skip Atlas (dead segments). Needs Origin. See STRATEGIES.md. |
+| vixsrc.to | implemented | Shipped in 1.13.0 (needs web-links >= 0.8.3 for its separate audio playlist). Pure HTTP; tokenised master from the embed page. Italian-first catalogue. Backend of Streaming Unity. See STRATEGIES.md. |
+| vidrock.net | implemented | Shipped in 1.13.0 (Orion + Luna; sends Origin via WebLink.headers, needs web-links >= 0.9.0). Pure HTTP; AES-GCM with a key in the bundle; use servers Orion (1080p) and Luna, skip Atlas (dead segments). Needs Origin. See STRATEGIES.md. |
 | api.vidlove.cc (player.vidlove.cc, 111movies.net) | candidate | Pure HTTP, Cinezo-style API, `sources=vidapi`. See STRATEGIES.md. |
 | atlantic.st (stream.hls.lol) | candidate | Pure HTTP; AES-GCM key in the bundle; three servers. See STRATEGIES.md. |
 | new.vidnest.fun | candidate | Keyless custom-alphabet base64; routes per upstream. `nextgencloudfabric` and `allmovies` (Hindi) work; others broken or PNG-segment. See STRATEGIES.md. |
@@ -38,11 +38,12 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | vidcore.net / vidcore.io | rejected | 403 (checked earlier). |
 | cinesrc.st | implemented | ShuttleTV's backend (shuttletv scraper). |
 
-## Implemented (8)
+## Implemented (9)
 
 | Site | Section | Note |
 |---|---|---|
 | [PressPlay](https://pressplayz.to/) | dedicated-server | covered by MoviesAPI: it only iframes moviesapi.to / vidspark.to / vidfast.pro |
+| [Streaming Unity](https://streamingunity.vip/) | dedicated-server | covered by VixSrc (its front-end) |
 | [7Movies](https://7movies.ac/) | stream-aggregators | sevenMovies |
 | [ArrowTV, 2 or Cinezo, 2](https://arrowtv.net/) | stream-aggregators | cinezo (Cinezo) |
 | [bCine](https://bcine.ru/) | stream-aggregators | bciney |
@@ -57,11 +58,10 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 |---|---|---|
 | [Atlantic](https://atlantic.st/) | dedicated-server | Own API `stream.hls.lol/helios` + AES-GCM key in the bundle; 3 servers, works for movie and TV. Recipe in STRATEGIES.md. |
 
-## Blocked (works, but the host cannot play it yet) (1)
+## Blocked (works, but the host cannot play it yet) (0)
 
 | Site | Section | Note |
 |---|---|---|
-| [Streaming Unity](https://streamingunity.vip/) | dedicated-server | Front-end for **vixsrc.to**; blocked with it (see STRATEGIES.md). |
 
 ## Possible (leads) (0)
 

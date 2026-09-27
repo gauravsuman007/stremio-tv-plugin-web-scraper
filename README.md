@@ -1,19 +1,19 @@
 # stremio-tv-plugin-web-scraper
 
 Web-link scrapers for several streaming sites (CineJoy, Flixer, bCine, Movy,
-ShuttleTV, 7Movies, Cinezo, MoviesAPI): each searches its site for a title and returns
+ShuttleTV, 7Movies, Cinezo, MoviesAPI, Vidrock, VixSrc): each searches its site for a title and returns
 the best direct, per-quality video link, ready to be handed to a player.
 They ship as one package, `streaming-sites`, for `stremio-tv-plugin-web-links`.
 
 Most sites need a real browser (see "Why browser automation" below); Cinezo
-and MoviesAPI have open JSON APIs and are plain HTTP.
+MoviesAPI, Vidrock and VixSrc have open JSON APIs and are plain HTTP.
 
 ## Sites
 
-`dist/` is one package (`streaming-sites`) that exports eight scrapers, each registered by the
+`dist/` is one package (`streaming-sites`) that exports ten scrapers, each registered by the
 host under its own id. Six sites work the same way (open a player URL keyed
 by TMDB id in a real browser, read the media URL the player requests); the
-seventh and eighth, Cinezo and MoviesAPI, ask their player's JSON API directly (an `HttpSite` instead of
+seventh to tenth, Cinezo, MoviesAPI, Vidrock and VixSrc, ask their player's JSON API directly (an `HttpSite` instead of
 a `BrowserSite`, no Chromium involved). All share `src/shared.mts` (TMDB lookup, capture, playlist verification,
 best-stream picking) and each site is one small module in `src/sites/`.
 Every scraper's `search()` returns one row; `resolve()` tries all of that
@@ -36,6 +36,8 @@ and then.
 | 7Movies | embed.vidrift.net (7movies.ac's player) | 1080p | Slow or missing for some titles (Interstellar, Breaking Bad returned nothing). |
 | Cinezo | player.cinezo.live (arrowtv.net's player) | 1080p | No browser: `proxy1.flikhub.net` answers plain HTTP given the player's Referer/Origin. Only its `berlin` source (HLS) is used; 1-4s. Missing for some titles (The Godfather, Superman 2025 returned an upstream 502). |
 | MoviesAPI | moviesapi.to (PressPlay's backend) | 1080p | No browser: a plain JSON API with a static player key from its bundle; ~1s. Muxed 1080p, playlist and segments play with the Referer alone. Missing for some titles (Casablanca, Breaking Bad S1E2, The Last of Us: upstream 502/404). |
+| Vidrock | vidrock.net | 1080p | No browser: its API returns AES-GCM-encrypted server URLs (key in its bundle). Uses the Orion and Luna servers; both need an `Origin` header, sent via `WebLink.headers` (needs web-links >= 0.9.0). 2-4s. |
+| VixSrc | vixsrc.to (Streaming Unity's backend) | 720p | No browser: API -> embed page -> tokenised master. English and Italian audio are separate playlists (needs web-links >= 0.8.3 to relay them); 480p/720p only; Italian-first catalogue. 0-1s. |
 
 Checked and left out:
 - watch.spencerdevs.xyz plays in a browser, but its CDN returns 403 to any
