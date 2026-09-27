@@ -234,9 +234,15 @@ export interface HttpSite extends SiteBase {
     httpCaptures(target: SiteTarget, ctx: ScraperContext): AsyncGenerator<Capture>;
 }
 
+/** The resolution class of a variant: 1920x800 (a widescreen film) is 1080p, not 800p, so it is the height a 16:9 frame of that width would have, when that is taller. */
 function variantHeight(variant: { resolution: string | null }): number {
-    return Number.parseInt(variant.resolution?.split("x")[1] ?? "0", 10) || 0;
+    const [width = 0, height = 0] = (variant.resolution ?? "").split("x").map((n) => Number.parseInt(n, 10) || 0);
+    const tall = Math.max(height, Math.round((width * 9) / 16));
+    return STANDARD_HEIGHTS.find((standard) => tall >= standard * 0.95) ?? tall;
 }
+
+/** Snapped to so the label reads as a familiar class (2592x1080 is 1440p-class, not "1458p"). */
+const STANDARD_HEIGHTS = [2160, 1440, 1080, 720, 576, 480, 360, 240];
 
 /** A leaf playlist states no resolution, but some sites put it in the URL (e.g. `index-s1080p-v1.m3u8`). */
 function heightFromUrl(url: string): number {
