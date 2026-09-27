@@ -553,6 +553,9 @@ export function createScraper(site: SiteAdapter): WebLinkScraper {
     return {
         id: site.id,
         name: `${site.name} · up to ${site.maxQuality}`,
+        maxQuality: site.maxQuality,
+        // A BrowserSite drives Playwright/Chromium ("slow"); an HttpSite is plain fetch ("fast").
+        fetchMethod: "captures" in site ? "slow" : "fast",
         search: (query, ctx) => searchSite(site, query, ctx),
         resolve: (_resolveId, query, ctx) => resolveSite(site, query, ctx)
     };

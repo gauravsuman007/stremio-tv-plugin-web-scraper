@@ -58,3 +58,7 @@ Read this if you are the app playing a returned `WebLink` (stremio-tv's web-link
 ## The same site can serve a different player depending on the caller's IP
 
 A scraper that resolves on a laptop and returns `null` on the server is not necessarily broken: sites such as 7movies pick a provider by address. From the server's datacentre IP its player streams a pre-warmed `relay.vidrift.net/proxy?url=...&exp=...` playlist and never requests a `.m3u8` at all, so a network-listening capture sees nothing. Always test a resolve **inside the server container** (`docker exec -w <package dir> stremio-tv node ...` with `CHROMIUM_PATH` set) before calling it fixed, and prefer a site's JSON API (`api/boot/...` `warmStreams`) over waiting for the browser. Playlist matchers also have to allow `.m3u8` followed by `&` (a relay's next parameter), and extension-less proxies (Flixer's `serve.dragonballzfans.xyz/proxy?data=`, bCine's CDN `index.m3u8`) need a per-site `isPlaylist`. Sites change these without notice; the symptom is always a bare `null`.
+
+## Every scraper carries maxQuality and fetchMethod
+
+`createScraper` (src/shared.mts) sets `WebLinkScraper.maxQuality` from the site's own `maxQuality` field, and `fetchMethod` from which `SiteAdapter` shape it is: a `BrowserSite` (has `captures`) is `"slow"`, an `HttpSite` (has `httpCaptures`) is `"fast"`. Both are set automatically -- a site module never sets them itself. Needs web-links >= 0.10.0 to show on the settings page; an older host just ignores the fields.
