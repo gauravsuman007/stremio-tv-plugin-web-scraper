@@ -19,13 +19,24 @@ host under its own id. Every one asks its player's API directly (an
 `HttpSite`, no Chromium involved). The browser-driven versions (`BrowserSite`s
 that opened the player in Chromium and read the media URL it requested) are
 kept, unexported, in `src/sites/archive/`: CineJoy and ShuttleTV until 1.18.0,
-Flixer, bCine, Movy and 7Movies until 1.19.0. `BrowserSite` itself is still
-supported by `src/shared.mts` for a site that genuinely needs it. All share `src/shared.mts` (TMDB lookup, capture, playlist verification,
-best-stream picking) and each site is one small module in `src/sites/`.
-Every scraper's `search()` returns one row; `resolve()` tries all of that
-site's servers and returns the best resolution (stopping early on 2160p, or
-after 10s once something plays). To add a site, write a `SiteAdapter`, wrap it
-with `createScraper`, and append it to the array in `src/index.mts`.
+Flixer, bCine, Movy and 7Movies until 1.19.0. Since 1.20.0 the browser code
+lives only in `src/browser.mts` (research and the archive; never bundled), so
+`dist/` no longer ships playwright-core and the host needs no Chromium for it.
+All share `src/shared.mts` (TMDB lookup, playlist verification, best-stream
+picking) and each site is one small module in `src/sites/`.
+
+`search()` resolves for real within the host's search budget (15s) and returns
+one row per working server, best first (at most three per site), each stating
+the resolution its playlist actually carries, e.g. `1920x1080/1280x720 ·
+Nebula`, plus `height` so web-links >= 0.11.0 lists every scraper's rows
+best resolution first. A site with nothing playable returns no row; one that doesn't finish
+in time returns a placeholder row resolved at play time. Servers are checked
+concurrently. Every row keeps a `resolveId` (`<site>` or `<site>~<server>`):
+`resolve()` hands back the link search found once a quick fetch shows it still
+works, and otherwise resolves afresh, preferring that row's server (stopping
+early on 2160p, or after 10s once something plays). To add a site, write an
+`HttpSite`, wrap it with `createScraper`, and append it to the array in
+`src/index.mts`.
 
 The scraper's name on the plugins page carries its max quality ("Movy · up to
 1080p"); it is the `maxQuality` on each adapter, set from testing across ten

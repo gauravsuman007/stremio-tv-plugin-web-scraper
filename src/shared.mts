@@ -1,29 +1,14 @@
 /**
- * What every site scraper shares: TMDB lookup, watching a page for the media
- * URL its player requests, verifying/expanding the playlist server-side, and
- * `createScraper`, which turns a `SiteAdapter` into a `WebLinkScraper`.
+ * What every site scraper shares: TMDB lookup, verifying/expanding the
+ * playlist server-side, and `createScraper`, which turns an `HttpSite` into a
+ * `WebLinkScraper`.
  *
- * WHY THESE NEED A REAL BROWSER, AND WHAT THAT COSTS THE HOST
- * ----------------------------------------------------------
- * See README.md's "Why browser automation" -- the stream URL comes out of
- * page-side code (WASM, or a player that only starts in a browser), so this
- * drives a real headless Chromium (via `playwright-core`, no bundled browser
- * download) and reads the URL the page's own player requests. That needs an
- * actual Chromium binary on the host running stremio-tv, at `CHROMIUM_PATH`
- * (default `/usr/bin/chromium-browser`, Alpine's `apk add chromium` path).
- * `playwright-core` ships as a real `node_modules/playwright-core` directory
- * next to the compiled code (see `scripts/build.mjs`), not bundled: its own
- * registry code resolves files relative to ITSELF at import time, which
- * breaks once relocated inside a bundle -- and it makes dynamic `require()`
- * calls, which is why the build output is `.cjs`.
- *
- * VPN: every plain HTTP call here (TMDB, playlists) goes through `ctx.fetch`,
- * already VPN-aware. Chromium's own traffic is routed via `ctx.proxyUrl`,
- * passed to Playwright's `proxy` launch option.
+ * Every shipped site is plain HTTP since 1.19.0 (`ctx.fetch`, already
+ * VPN-aware), and since 1.20.0 nothing in the bundle needs Chromium or
+ * playwright-core. The browser-driven capture the archived scrapers used
+ * lives in ./browser.mts for research.
  */
 
-import { chromium, type Page, type Request as PwRequest } from "playwright-core";
-import { existsSync } from "node:fs";
 
 /* The contract comes straight from the upstream repo, vendored as a git
  * submodule (vendor/web-links) and imported type-only: esbuild erases it, so
@@ -36,18 +21,7 @@ export type { ScraperContext };
 const TMDB_API_KEY = "8476a7ab80ad76f0936744df0430e67c";
 const TMDB_BASE = "https://api.themoviedb.org/3";
 
-/** `.m3u8` at the end, before a query, or -- for a playlist wrapped in a relay's `?url=...&exp=...` -- before the next parameter. */
-const MASTER_PLAYLIST_RE = /\.m3u8(?:[?&#].*)?$/i;
 const DIRECT_FILE_RE = /\.(mp4|mkv|webm)(\?.*)?$/i;
-const SEGMENT_OR_INIT_RE = /(^|\/)(init|seg(ment)?[-_]?\d+|\d+)\.(mp4|m4s|webm)(\?.*)?$/i;
-const FILE_CANDIDATE_GRACE_MS = 4_000;
-/** Trailers and previews some sites autoplay before the real player starts. */
-const IGNORED_MEDIA_RE = /media-imdb\.com|youtube\.com|ytimg\.com|googlevideo\.com/i;
-
-export interface CaptureOptions {
-    /** What counts as a playlist URL, for a site whose playlists lack a `.m3u8` extension. */
-    isPlaylist?: RegExp;
-}
 
 interface TmdbMultiResult {
     id: number;
@@ -129,7 +103,7 @@ const MATCH_TTL_MS = 60_000;
 const matchCache = new Map<string, { at: number; match: Promise<TmdbMatch | null> }>();
 
 /** The host runs every scraper for the same title at once; share one TMDB lookup between them. */
-function resolveTmdbMatch(query: WebLinkQuery, fetchImpl: ScraperContext["fetch"]): Promise<TmdbMatch | null> {
+export function resolveTmdbMatch(query: WebLinkQuery, fetchImpl: ScraperContext["fetch"]): Promise<TmdbMatch | null> {
     const key = `${query.type}|${query.id}|${query.title}`;
     const cached = matchCache.get(key);
     if (cached && Date.now() - cached.at < MATCH_TTL_MS) return cached.match;
@@ -148,65 +122,6 @@ async function lookupTmdbMatch(query: WebLinkQuery, fetchImpl: ScraperContext["f
     const matches = await tmdbSearch(fetchImpl, query.title);
     return matches.find((m) => m.mediaType === wantType) ?? matches[0] ?? null;
 }
-
-
-/**
- * Listens for the media URL the page's player requests, THEN runs `trigger`
- * (a click sequence, or the `goto` itself for a site that autoplays -- the
- * listener has to be attached before the load or the request is missed).
- */
-export async function captureMediaUrl(
-    page: Page,
-    timeoutMs: number,
-    trigger: (isDone: () => boolean) => Promise<unknown>,
-    options: CaptureOptions = {}
-): Promise<string | null> {
-    const playlistRe = options.isPlaylist ?? MASTER_PLAYLIST_RE;
-    let resolveMedia: (url: string | null) => void;
-    const donePromise = new Promise<string | null>((resolve) => {
-        resolveMedia = resolve;
-    });
-
-    let fileCandidate: string | null = null;
-    let graceTimer: ReturnType<typeof setTimeout> | null = null;
-    let settled = false;
-
-    const settle = (url: string | null) => {
-        if (settled) return;
-        settled = true;
-        if (graceTimer) clearTimeout(graceTimer);
-        resolveMedia(url);
-    };
-
-    const onRequest = (request: PwRequest) => {
-        const url = request.url();
-        if (IGNORED_MEDIA_RE.test(url)) return;
-        if (playlistRe.test(url)) {
-            settle(url);
-            return;
-        }
-        if (!fileCandidate && DIRECT_FILE_RE.test(url) && !SEGMENT_OR_INIT_RE.test(url)) {
-            fileCandidate = url;
-            graceTimer = setTimeout(() => settle(fileCandidate), FILE_CANDIDATE_GRACE_MS);
-        }
-    };
-    page.on("request", onRequest);
-
-    try {
-        await trigger(() => settled);
-
-        return await Promise.race([
-            donePromise,
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs))
-        ]);
-    } catch {
-        return null;
-    } finally {
-        page.off("request", onRequest);
-        if (graceTimer) clearTimeout(graceTimer);
-    }
-}
-
 
 /** The headers the site's media hosts want: its Referer plus any extras (see `SiteBase.headers`). */
 function mediaHeaders(site: { referrer: string; headers?: Record<string, string> }): Record<string, string> {
@@ -275,19 +190,6 @@ async function leafDuration(fetchImpl: ScraperContext["fetch"], url: string, hea
     return total;
 }
 
-/** Alpine's `apk add chromium` package name, or an override for a
- *  differently-built host. See this repo's README for the Dockerfile side
- *  of this contract. */
-function findChromiumExecutable(): string | undefined {
-    const override = process.env.CHROMIUM_PATH;
-    if (override && existsSync(override)) return override;
-
-    for (const candidate of ["/usr/bin/chromium-browser", "/usr/bin/chromium"]) {
-        if (existsSync(candidate)) return candidate;
-    }
-    return undefined;
-}
-
 
 /* ---- site adapters ---------------------------------------------------- */
 
@@ -303,8 +205,8 @@ export interface Capture {
     label?: string;
 }
 
-interface SiteBase {
-    /** Doubles as `WebLink.resolveId`. */
+export interface SiteBase {
+    /** Doubles as `WebLink.resolveId` (with `~<label>` for one server's row). */
     id: string;
     /** Shown on the result row. */
     name: string;
@@ -318,67 +220,14 @@ interface SiteBase {
     /** The best resolution seen across the titles this adapter was tested on
      *  (see README.md). Shown in the scraper's name on the plugins page. */
     maxQuality: string;
-    /** Cheap, browser-free check run at list time; false drops the placeholder. */
+    /** Cheap check run before anything else; false drops the site's rows. */
     available?(ctx: ScraperContext): Promise<boolean>;
 }
 
-/** A site whose stream only comes out of page-side code: drives a real browser. */
-export interface BrowserSite extends SiteBase {
-    /** Drives `page` and yields candidate media URLs, best first. The caller
-     *  verifies each one and stops at the first that plays. */
-    captures(page: Page, target: SiteTarget, ctx: ScraperContext): AsyncGenerator<Capture>;
-}
-
-/** A site with an open JSON API for its streams: plain `ctx.fetch`, no Chromium needed. */
+/** A site with an open JSON API for its streams: plain `ctx.fetch`. */
 export interface HttpSite extends SiteBase {
+    /** Yields candidate media URLs, best first. Each is verified as it arrives. */
     httpCaptures(target: SiteTarget, ctx: ScraperContext): AsyncGenerator<Capture>;
-}
-
-export type SiteAdapter = BrowserSite | HttpSite;
-
-const PAGE_LOAD_CAPTURE_TIMEOUT_MS = 20_000;
-
-export interface AutoplayOptions extends CaptureOptions {
-    /** The player waits for a Play click. Popunder ads hijack the first clicks
-     *  by navigating the page away, so navigations are blocked once it loads. */
-    clickPlay?: boolean;
-}
-
-/** Open `url` in a player that starts by itself (or after a Play click) and take the first media request. */
-export async function* autoplayCapture(
-    page: Page,
-    url: string,
-    ctx: ScraperContext,
-    options: AutoplayOptions = {}
-): AsyncGenerator<Capture> {
-    const timeoutMs = Math.min(PAGE_LOAD_CAPTURE_TIMEOUT_MS, Math.max(8_000, ctx.budgetMs));
-    const mediaUrl = await captureMediaUrl(
-        page,
-        timeoutMs,
-        async (isDone) => {
-            if (!options.clickPlay) {
-                await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
-                return;
-            }
-
-            let armed = false;
-            await page.route("**/*", (route) => {
-                const request = route.request();
-                return armed && request.isNavigationRequest() && request.frame() === page.mainFrame()
-                    ? route.abort()
-                    : route.continue();
-            });
-            await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
-            armed = true;
-
-            for (let attempt = 0; attempt < 4 && !isDone(); attempt++) {
-                await page.locator('button:has-text("Play"), a:has-text("Play")').first().click({ timeout: 2_500, force: true }).catch(() => {});
-                await page.waitForTimeout(4_000);
-            }
-        },
-        options
-    );
-    if (mediaUrl) yield { mediaUrl };
 }
 
 function variantHeight(variant: { resolution: string | null }): number {
@@ -394,169 +243,248 @@ function heightFromUrl(url: string): number {
 const BEST_POSSIBLE_HEIGHT = 2160;
 /** Once something plays, stop comparing further servers after this long. With nothing playable yet, keep looking. */
 const SOFT_DEADLINE_MS = 10_000;
+/** A resolve at play time keeps looking this long for anything playable. */
+const RESOLVE_DEADLINE_MS = 60_000;
 
-
-/**
- * PLAY TIME: drives one browser through the chosen site's player, verifies
- * each capture it yields (every up server, for a multi-server site), and
- * returns the one with the best resolution, so a dead mirror is skipped
- * rather than left for the viewer to retry by hand. It stops early on a
- * 2160p stream, and once anything plays it stops comparing after
- * `SOFT_DEADLINE_MS`; until something plays it keeps going through the
- * remaining servers.
- */
-async function resolveSite(site: SiteAdapter, query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink | null> {
-    const match = await resolveTmdbMatch(query, ctx.fetch);
-    if (!match) return null;
-
-    const target: SiteTarget = { match, season: query.season, episode: query.episode };
-    const displayTitle = match.year ? `${match.title} (${match.year})` : match.title;
-
-    if ("httpCaptures" in site) return pickBestCapture(site, site.httpCaptures(target, ctx), displayTitle, ctx);
-
-    const executablePath = findChromiumExecutable();
-    if (!executablePath) return null;
-
-    const browser = await chromium.launch({
-        headless: true,
-        executablePath,
-        args: ["--no-sandbox", "--disable-dev-shm-usage"],
-        proxy: ctx.proxyUrl ? { server: ctx.proxyUrl } : undefined
-    });
-
-    try {
-        const context = await browser.newContext({
-            userAgent:
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
-        });
-        const page = await context.newPage();
-        context.on("page", (popup) => void popup.close().catch(() => {}));
-
-        return await pickBestCapture(site, site.captures(page, target, ctx), displayTitle, ctx);
-    } finally {
-        await browser.close();
-    }
+interface Candidate {
+    link: WebLink;
+    score: number;
+    height: number;
+    label?: string;
 }
 
-async function pickBestCapture(
-    site: SiteAdapter,
+/**
+ * Checks one capture the way a player would meet it: the master (or the file)
+ * fetches, its best variant is a finished playlist longer than a stub. Returns
+ * the link to hand out, or null for a dead/blocked/decoy mirror.
+ */
+async function verifyCapture(site: SiteBase, { mediaUrl, label }: Capture, displayTitle: string, ctx: ScraperContext): Promise<Candidate | null> {
+    const variants = await expandMasterPlaylist(ctx.fetch, mediaUrl, mediaHeaders(site)).catch(() => null);
+    const top = variants?.[0]; // sorted by bandwidth, highest first.
+    if (!variants || !top) return null;
+
+    if (!DIRECT_FILE_RE.test(top.url)) {
+        const duration = await leafDuration(ctx.fetch, top.url, mediaHeaders(site)).catch(() => 0);
+        if (duration !== null && duration < MIN_PLAUSIBLE_DURATION_S) return null; // a stub, not the title.
+    }
+
+    const height = Math.max(...variants.map(variantHeight)) || heightFromUrl(mediaUrl);
+    const score = height * 1e9 + Math.max(...variants.map((v) => v.bandwidth ?? 0));
+
+    /*
+        A REAL MASTER, WITH SOMETHING TO PICK BETWEEN, GOES THROUGH WHOLE --
+        not flattened to its best variant, so the viewer keeps a say over the
+        rendition. `web-links`' relay (`rewritePlaylist`) routes a master's
+        variant lines back through itself like a leaf's segments. A
+        single-variant result has nothing to pick between and goes out flat.
+    */
+    const resolutions = variants.map((v) => v.resolution).filter((r): r is string => Boolean(r));
+    const multi = variants.length > 1;
+    const mirror = label ? `${site.name} mirror: ${label}` : site.name;
+
+    return {
+        score,
+        height,
+        label,
+        link: {
+            url: multi ? mediaUrl : top.url,
+            resolveKind: "hls",
+            quality: resolutions.length
+                ? `${resolutions.join("/")} · ${label ?? site.name}`
+                : height
+                  ? `${height}p · ${label ?? site.name}`
+                  : mirror,
+            title: displayTitle,
+            referrer: site.referrer,
+            ...(site.headers ? { headers: site.headers } : {}),
+            ...(height ? { height } : {})
+        }
+    };
+}
+
+/**
+ * Verifies every capture the site yields, CONCURRENTLY -- each check starts
+ * the moment its capture arrives, so one slow mirror no longer holds up the
+ * rest. Returns the playable ones, best first. Stops on a 2160p stream; once
+ * anything plays, stops comparing `SOFT_DEADLINE_MS` after the start; and
+ * gives up at `deadlineMs` regardless. `complete` is true when the answer is
+ * conclusive (every server checked, or something found) -- false means the
+ * deadline cut it short with nothing found yet.
+ */
+function collectCandidates(
+    site: SiteBase,
     captures: AsyncGenerator<Capture>,
     displayTitle: string,
-    ctx: ScraperContext
-): Promise<WebLink | null> {
-    let best: { link: WebLink; score: number; height: number } | null = null;
-    const startedAt = Date.now();
+    ctx: ScraperContext,
+    deadlineMs: number
+): Promise<{ candidates: Candidate[]; complete: boolean }> {
+    return new Promise((resolve) => {
+        const startedAt = Date.now();
+        const candidates: Candidate[] = [];
+        let pending = 0;
+        let exhausted = false;
+        let finished = false;
+        let softTimer: ReturnType<typeof setTimeout> | undefined;
 
-    try {
-        while (true) {
-            const pending = captures.next();
-            pending.catch(() => {}); // may be abandoned at the deadline; the browser closing settles it.
+        const finish = (complete: boolean) => {
+            if (finished) return;
+            finished = true;
+            clearTimeout(hardTimer);
+            clearTimeout(softTimer);
+            void captures.return(undefined).catch(() => {}); // not awaited: it may queue behind a pending step.
+            candidates.sort((a, b) => b.score - a.score);
+            resolve({ candidates, complete: complete || candidates.length > 0 });
+        };
+        const hardTimer = setTimeout(() => finish(false), deadlineMs);
 
-            let step: IteratorResult<Capture> | null;
-            if (best) {
-                const remainingMs = SOFT_DEADLINE_MS - (Date.now() - startedAt);
-                if (remainingMs <= 0) break;
-                step = await Promise.race([pending, new Promise<null>((r) => setTimeout(() => r(null), remainingMs))]);
-            } else {
-                step = await pending;
-            }
-            if (!step || step.done) break;
+        const onCandidate = (candidate: Candidate) => {
+            candidates.push(candidate);
+            if (candidate.height >= BEST_POSSIBLE_HEIGHT) return finish(true);
+            softTimer ??= setTimeout(() => finish(true), Math.max(0, SOFT_DEADLINE_MS - (Date.now() - startedAt)));
+        };
 
-            const { mediaUrl, label } = step.value;
-
-            let variants;
+        void (async () => {
             try {
-                variants = await expandMasterPlaylist(ctx.fetch, mediaUrl, mediaHeaders(site));
-            } catch {
-                continue; // dead/blocked mirror -- try the next one.
-            }
-
-            const top = variants[0]; // sorted by bandwidth, highest first.
-            if (!top) continue;
-
-            if (!DIRECT_FILE_RE.test(top.url)) {
-                const duration = await leafDuration(ctx.fetch, top.url, mediaHeaders(site)).catch(() => 0);
-                if (duration !== null && duration < MIN_PLAUSIBLE_DURATION_S) continue; // a stub, not the title.
-            }
-
-            const height = Math.max(...variants.map(variantHeight)) || heightFromUrl(mediaUrl);
-            const score = height * 1e9 + Math.max(...variants.map((v) => v.bandwidth ?? 0));
-            if (best && score <= best.score) continue;
-
-            /*
-                A REAL MASTER, WITH SOMETHING TO PICK BETWEEN, GOES THROUGH
-                WHOLE -- not flattened to its best variant. Measured: these
-                sites' own master playlists commonly carry two or three
-                resolutions (1080p and 720p, here), which is exactly the
-                shape a viewer might want a say over rather than always
-                getting the top one silently. `web-links`' own relay
-                (`rewritePlaylist`) already knows how to route a master's
-                variant lines back through itself, same as it does for a
-                leaf playlist's segments -- see its own doc comment. A
-                single-variant result (a plain file, or a master with only
-                one rendition) has nothing to pick between, so it keeps
-                going out flattened exactly as before.
-            */
-            const resolutions = variants.map((v) => v.resolution).filter((r): r is string => Boolean(r));
-            const multi = variants.length > 1;
-            const mirror = label ? `${site.name} mirror: ${label}` : site.name;
-
-            best = {
-                score,
-                height,
-                link: {
-                    url: multi ? mediaUrl : top.url,
-                    resolveKind: "hls",
-                    quality: resolutions.length
-                        ? `${resolutions.join("/")} · ${label ?? site.name}`
-                        : height
-                          ? `${height}p · ${label ?? site.name}`
-                          : mirror,
-                    title: displayTitle,
-                    referrer: site.referrer,
-                    ...(site.headers ? { headers: site.headers } : {})
+                while (!finished) {
+                    const step = await captures.next();
+                    if (step.done || finished) break;
+                    pending++;
+                    void verifyCapture(site, step.value, displayTitle, ctx)
+                        .catch(() => null)
+                        .then((candidate) => {
+                            pending--;
+                            if (candidate && !finished) onCandidate(candidate);
+                            if (exhausted && pending === 0) finish(true);
+                        });
                 }
-            };
+            } catch {
+                // a site's generator threw: judge by what it yielded so far.
+            }
+            exhausted = true;
+            if (pending === 0) finish(true);
+        })();
+    });
+}
 
-            if (best.height >= BEST_POSSIBLE_HEIGHT) break;
-        }
-    } finally {
-        void captures.return(undefined).catch(() => {}); // not awaited: it queues behind an abandoned pending step.
+/** Used by ./browser.mts's research scrapers: the best verified link, or null. */
+export async function pickBestLink(site: SiteBase, captures: AsyncGenerator<Capture>, match: TmdbMatch, ctx: ScraperContext): Promise<WebLink | null> {
+    const { candidates } = await collectCandidates(site, captures, displayName(match), ctx, RESOLVE_DEADLINE_MS);
+    return candidates[0]?.link ?? null;
+}
+
+function displayName(match: TmdbMatch): string {
+    return match.year ? `${match.title} (${match.year})` : match.title;
+}
+
+/*
+    RESOLVED LINKS ARE KEPT BETWEEN SEARCH AND PLAY. Search now resolves (it
+    has to, to know the quality), so the link it found is remembered here and
+    handed back when that row is played -- after a quick check that its
+    playlist still fetches, since how long each site's tokens live varies. A
+    link that fails the check is resolved afresh. `LINK_MAX_AGE_MS` is only
+    an upper bound on trusting a check that passed.
+*/
+const LINK_MAX_AGE_MS = 6 * 60 * 60_000;
+const PROBE_TIMEOUT_MS = 5_000;
+const linkCache = new Map<string, { at: number; link: WebLink }>();
+
+function linkKey(resolveId: string, query: WebLinkQuery): string {
+    return `${resolveId}|${query.type}|${query.id}|${query.season ?? ""}|${query.episode ?? ""}`;
+}
+
+function rememberLinks(site: SiteBase, candidates: Candidate[], query: WebLinkQuery) {
+    const now = Date.now();
+    for (const [key, entry] of linkCache) if (now - entry.at > LINK_MAX_AGE_MS) linkCache.delete(key);
+    if (candidates[0]) linkCache.set(linkKey(site.id, query), { at: now, link: candidates[0].link });
+    for (const candidate of candidates) {
+        if (candidate.label) linkCache.set(linkKey(`${site.id}~${candidate.label}`, query), { at: now, link: candidate.link });
     }
+}
 
-    return best?.link ?? null; // null: no server on this site produced a playable link.
+async function stillPlays(link: WebLink, ctx: ScraperContext): Promise<boolean> {
+    try {
+        const response = await ctx.fetch(link.url, {
+            headers: { Referer: link.referrer ?? "", ...link.headers, ...(DIRECT_FILE_RE.test(link.url) ? { Range: "bytes=0-1023" } : {}) },
+            signal: AbortSignal.timeout(PROBE_TIMEOUT_MS)
+        });
+        if (DIRECT_FILE_RE.test(link.url)) return response.ok;
+        return response.ok && (await response.text()).trimStart().startsWith("#EXTM3U");
+    } catch {
+        return false;
+    }
+}
+
+async function candidatesFor(site: HttpSite, query: WebLinkQuery, ctx: ScraperContext, deadlineMs: number) {
+    const match = await resolveTmdbMatch(query, ctx.fetch);
+    if (!match) return null;
+    const target: SiteTarget = { match, season: query.season, episode: query.episode };
+    const result = await collectCandidates(site, site.httpCaptures(target, ctx), displayName(match), ctx, deadlineMs);
+    rememberLinks(site, result.candidates, query);
+    return { match, ...result };
 }
 
 /**
- * LIST TIME: cheap and fast, no browser -- just enough to know the site has
- * SOMETHING for this title (a real TMDB match, and whatever cheap check the
- * site offers). One placeholder row, tagged with the site's name. Which
- * server actually ends up serving the video is `resolve()`'s job entirely.
+ * PLAY TIME: the link search found for this row, if it still fetches;
+ * otherwise a fresh resolve, preferring the row's own server (`<id>~<label>`)
+ * and falling back to the site's best.
  */
-async function searchSite(site: SiteAdapter, query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink[]> {
-    if (!("httpCaptures" in site) && !findChromiumExecutable()) {
-        console.warn(`[${site.id}] no Chromium binary found (set CHROMIUM_PATH, or apk add chromium) -- skipping`);
-        return [];
-    }
+async function resolveSite(site: HttpSite, resolveId: string, query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink | null> {
+    const cached = linkCache.get(linkKey(resolveId, query));
+    if (cached && Date.now() - cached.at < LINK_MAX_AGE_MS && (await stillPlays(cached.link, ctx))) return cached.link;
 
-    const match = await resolveTmdbMatch(query, ctx.fetch);
-    if (!match) return [];
+    const found = await candidatesFor(site, query, ctx, RESOLVE_DEADLINE_MS);
+    if (!found) return null;
+    const label = resolveId.includes("~") ? resolveId.slice(resolveId.indexOf("~") + 1) : undefined;
+    return (found.candidates.find((c) => label && c.label === label) ?? found.candidates[0])?.link ?? null;
+}
 
+/** At most this many rows per site: its best few servers, not every mirror. */
+const MAX_ROWS_PER_SITE = 3;
+/** Left of the host's search budget for its own work. */
+const SEARCH_MARGIN_MS = 1_500;
+
+/**
+ * LIST TIME: resolves for real within the host's search budget, so each row
+ * states the resolution its playlist actually carries rather than a guess --
+ * one row per working server (up to `MAX_ROWS_PER_SITE`), best first. A site
+ * that answered and has nothing playable shows no row at all. One that
+ * didn't finish in time keeps today's placeholder row, resolved at play time.
+ * Every row keeps a `resolveId`: the URL is looked up (and re-checked) when
+ * played, never baked into the list.
+ */
+async function searchSite(site: HttpSite, query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink[]> {
     if (site.available && !(await site.available(ctx).catch(() => false))) return [];
 
-    const displayTitle = match.year ? `${match.title} (${match.year})` : match.title;
-    return [{ url: "", resolveId: site.id, resolveKind: "hls", title: `${displayTitle} · ${site.name}` }];
+    const found = await candidatesFor(site, query, ctx, Math.max(3_000, ctx.budgetMs - SEARCH_MARGIN_MS));
+    if (!found) return [];
+    const title = `${displayName(found.match)} · ${site.name}`;
+
+    if (!found.candidates.length) {
+        return found.complete ? [] : [{ url: "", resolveId: site.id, resolveKind: "hls", title }];
+    }
+
+    const rows: WebLink[] = [];
+    const seen = new Set<string>();
+    for (const [index, candidate] of found.candidates.entries()) {
+        // Only the best row may go unlabelled (it resolves to the site's best); any other needs its server's label.
+        if (!candidate.label && index > 0) continue;
+        const resolveId = candidate.label ? `${site.id}~${candidate.label}` : site.id;
+        if (seen.has(resolveId) || seen.has(candidate.link.url)) continue;
+        seen.add(resolveId).add(candidate.link.url);
+        rows.push({ url: "", resolveId, resolveKind: "hls", title, quality: candidate.link.quality, ...(candidate.height ? { height: candidate.height } : {}) });
+        if (rows.length >= MAX_ROWS_PER_SITE) break;
+    }
+    return rows;
 }
 
 /** No `version`: `src/index.mts` stamps package.json's onto every scraper it exports. */
-export function createScraper(site: SiteAdapter): WebLinkScraper {
+export function createScraper(site: HttpSite): WebLinkScraper {
     return {
         id: site.id,
         name: `${site.name} · up to ${site.maxQuality}`,
         maxQuality: site.maxQuality,
-        // A BrowserSite drives Playwright/Chromium ("slow"); an HttpSite is plain fetch ("fast").
-        fetchMethod: "captures" in site ? "slow" : "fast",
+        fetchMethod: "fast",
         search: (query, ctx) => searchSite(site, query, ctx),
-        resolve: (_resolveId, query, ctx) => resolveSite(site, query, ctx)
+        resolve: (resolveId, query, ctx) => resolveSite(site, resolveId, query, ctx)
     };
 }

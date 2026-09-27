@@ -4,7 +4,7 @@
  * a fallback to restore if the site changes its protocol faster than the
  * HTTP version can follow (STRATEGIES.md, "WASM reverse-engineering").
  */
-import { autoplayCapture, createScraper, type SiteAdapter } from "../../shared.mts";
+import { autoplayCapture, createBrowserScraper, type BrowserSite } from "../../browser.mts";
 
 /**
  * flixer.gd -- same `/watch/{movie|tv}/{tmdbId}[/s/e]` shape as cinejoy, but
@@ -15,7 +15,7 @@ import { autoplayCapture, createScraper, type SiteAdapter } from "../../shared.m
  * The site injects malvertising (popunders, fake "install adblocker"
  * prompts); `resolve()` closes any popup tab, and nothing here ever clicks.
  */
-const flixerSite: SiteAdapter = {
+const flixerSite: BrowserSite = {
     id: "flixer",
     name: "Flixer",
     referrer: "https://flixer.gd/",
@@ -36,4 +36,4 @@ const flixerSite: SiteAdapter = {
 };
 
 
-export default createScraper(flixerSite);
+export default createBrowserScraper(flixerSite);

@@ -4,7 +4,7 @@ import { createScraper, type Capture, type HttpSite, type ScraperContext } from 
  * movy.sx -- its player asks `api.wecollege.net/<city>/sources` (16 "cities",
  * each a different upstream) with `enc=2` and a short-lived seed from
  * `/seed?mediaId=<tmdb>`. This makes the same calls from Node (it used to click
- * through the page; see ./archive/movy-browser.mts). Under a second a provider.
+ * through the page; see ./archive/movy-browser.mts). Providers are asked in parallel.
  *
  * The answer is base64url, XORed with a keystream the page's own JS derives
  * from the seed and the tmdb id (a 61-word state mixed with FNV-1a and the
@@ -89,14 +89,9 @@ const movySite: HttpSite = {
     referrer: `${BASE_URL}/`,
     maxQuality: "1080p",
     async *httpCaptures({ match, season, episode }, ctx): AsyncGenerator<Capture> {
-        let seed = await getSeed(ctx.fetch, match.tmdbId);
-        let seedAt = Date.now();
-
-        for (const provider of PROVIDERS) {
-            if (Date.now() - seedAt > 25_000) {
-                seed = await getSeed(ctx.fetch, match.tmdbId);
-                seedAt = Date.now();
-            }
+        // One seed, every provider asked at once (4 calls on one seed is what the page does; 16 seeds is not).
+        const seed = await getSeed(ctx.fetch, match.tmdbId);
+        const answers = PROVIDERS.map((provider) => {
             const params = new URLSearchParams({
                 title: encodeURIComponent(match.title),
                 mediaType: match.mediaType,
@@ -107,13 +102,16 @@ const movySite: HttpSite = {
                 enc: "2",
                 seed
             });
-            const sources = await ctx
+            return ctx
                 .fetch(`${API}/${provider}/sources?${params}`, { headers, signal: AbortSignal.timeout(TIMEOUT_MS) })
                 .then(async (r) => (r.ok ? (JSON.parse(decrypt(await r.text(), seed, match.tmdbId)) as { sources?: { url?: string }[] }).sources : undefined))
                 .catch(() => undefined);
+        });
+
+        for (const [i, answer] of answers.entries()) {
             // Several per-quality playlists, highest first: the first that plays is the one to keep.
-            const mediaUrl = sources?.find((s) => s.url)?.url;
-            if (mediaUrl) yield { mediaUrl, label: provider };
+            const mediaUrl = (await answer)?.find((s) => s.url)?.url;
+            if (mediaUrl) yield { mediaUrl, label: PROVIDERS[i] };
         }
     }
 };

@@ -4,7 +4,7 @@
  * a fallback to restore if the site changes faster than the HTTP version can
  * follow (STRATEGIES.md).
  */
-import { autoplayCapture, createScraper, type SiteAdapter } from "../../shared.mts";
+import { autoplayCapture, createBrowserScraper, type BrowserSite } from "../../browser.mts";
 
 /**
  * bciney.to -- its own watch page just iframes `player.bciney.to`, so this
@@ -12,7 +12,7 @@ import { autoplayCapture, createScraper, type SiteAdapter } from "../../shared.m
  * wrapper). It autoplays with `?autoplay=true`; the playlist comes back via
  * its own `v.bciney.to` proxy (the master is the extension-less `/v?url=`) and needs no special headers.
  */
-const bcineySite: SiteAdapter = {
+const bcineySite: BrowserSite = {
     id: "bciney",
     name: "bCine",
     referrer: "https://player.bciney.to/",
@@ -34,4 +34,4 @@ const bcineySite: SiteAdapter = {
 };
 
 
-export default createScraper(bcineySite);
+export default createBrowserScraper(bcineySite);

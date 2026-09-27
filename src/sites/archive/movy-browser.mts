@@ -4,7 +4,7 @@
  * a fallback to restore if the site changes faster than the HTTP version can
  * follow (STRATEGIES.md).
  */
-import { autoplayCapture, createScraper, type SiteAdapter } from "../../shared.mts";
+import { autoplayCapture, createBrowserScraper, type BrowserSite } from "../../browser.mts";
 
 /**
  * movy.sx -- `/movie/{tmdb}` and `/tv/{tmdb}/{s}/{e}`. The player waits for a
@@ -15,7 +15,7 @@ import { autoplayCapture, createScraper, type SiteAdapter } from "../../shared.m
  * is read from the URL. The page also autoplays an IMDb trailer, which
  * capture ignores.
  */
-const movySite: SiteAdapter = {
+const movySite: BrowserSite = {
     id: "movy",
     name: "Movy",
     referrer: "https://movy.sx/",
@@ -30,4 +30,4 @@ const movySite: SiteAdapter = {
     }
 };
 
-export default createScraper(movySite);
+export default createBrowserScraper(movySite);

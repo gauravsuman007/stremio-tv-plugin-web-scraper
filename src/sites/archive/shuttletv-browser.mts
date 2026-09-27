@@ -4,7 +4,7 @@
  * a fallback to restore if the site changes its protocol faster than the
  * HTTP version can follow (STRATEGIES.md, "WASM reverse-engineering").
  */
-import { autoplayCapture, createScraper, type SiteAdapter } from "../../shared.mts";
+import { autoplayCapture, createBrowserScraper, type BrowserSite } from "../../browser.mts";
 
 /**
  * shuttletv.su -- its watch page just iframes `cinesrc.st`'s embed, so this
@@ -13,7 +13,7 @@ import { autoplayCapture, createScraper, type SiteAdapter } from "../../shared.m
  * Playlists come from `cinesrc.st/api/playlist/{token}` with no `.m3u8`
  * extension, so the URL prefix is what identifies them.
  */
-const shuttletvSite: SiteAdapter = {
+const shuttletvSite: BrowserSite = {
     id: "shuttletv",
     name: "ShuttleTV",
     referrer: "https://cinesrc.st/",
@@ -28,4 +28,4 @@ const shuttletvSite: SiteAdapter = {
     }
 };
 
-export default createScraper(shuttletvSite);
+export default createBrowserScraper(shuttletvSite);

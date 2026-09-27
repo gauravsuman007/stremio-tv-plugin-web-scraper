@@ -11,7 +11,8 @@
  * media URL the player requests. See README.md's "Why browser automation".
  */
 import type { Page } from "playwright-core";
-import { captureMediaUrl, createScraper, type ScraperContext, type SiteAdapter } from "../../shared.mts";
+import { captureMediaUrl, createBrowserScraper, type BrowserSite } from "../../browser.mts";
+import type { ScraperContext } from "../../shared.mts";
 
 const BASE_URL = "https://cinejoy.pk";
 const DEFAULT_PER_SERVER_TIMEOUT_MS = 20_000;
@@ -56,7 +57,7 @@ function selectServerAndCapture(page: Page, serverName: string, timeoutMs: numbe
  * order until one plays, so trying the more-capable one first can only
  * ever help, never delay a title that has nothing higher to offer.
  */
-const cinejoySite: SiteAdapter = {
+const cinejoySite: BrowserSite = {
     id: "cinejoy",
     name: "CineJoy",
     referrer: `${BASE_URL}/`,
@@ -85,4 +86,4 @@ const cinejoySite: SiteAdapter = {
 };
 
 
-export default createScraper(cinejoySite);
+export default createBrowserScraper(cinejoySite);

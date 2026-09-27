@@ -4,7 +4,7 @@
  * a fallback to restore if the site changes faster than the HTTP version can
  * follow (STRATEGIES.md).
  */
-import { autoplayCapture, createScraper, type SiteAdapter } from "../../shared.mts";
+import { autoplayCapture, createBrowserScraper, type BrowserSite } from "../../browser.mts";
 
 /**
  * 7movies.ac -- its watch page iframes `embed.vidrift.net`, so this opens that
@@ -32,7 +32,7 @@ interface BootStream {
     provider?: string;
 }
 
-const sevenMoviesSite: SiteAdapter = {
+const sevenMoviesSite: BrowserSite = {
     id: "7movies",
     name: "7Movies",
     referrer: "https://embed.vidrift.net/",
@@ -60,4 +60,4 @@ const sevenMoviesSite: SiteAdapter = {
     }
 };
 
-export default createScraper(sevenMoviesSite);
+export default createBrowserScraper(sevenMoviesSite);

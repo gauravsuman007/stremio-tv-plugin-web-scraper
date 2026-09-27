@@ -36,7 +36,7 @@ Read this if you are the app playing a returned `WebLink` (stremio-tv's web-link
 
 **Send the link's `referrer` as `Referer` on every request** -- the playlist, variant playlists and segments. Without it the CDNs answer 403 (Cinezo's proxy returns a Cloudflare page). Some links also declare `headers` (Vidrock: `Origin`) -- send those too, on every request; those CDNs 403 a Referer alone. Use a browser-like `User-Agent`. Don't reuse a link's referrer or headers for another site.
 
-**Resolve at play time, don't cache links.** Search rows are placeholders (`url: ""`, `resolveId` set); `resolve()` does the work (3-45s for browser-driven sites, 1-4s for Cinezo). Resolved URLs carry short-lived tokens (Cinezo's lapse after ~6h), so re-resolve rather than storing them.
+**Re-check links at play time, don't store them.** Since 1.20.0 `search()` resolves within the search budget, so its rows carry the real resolution, but every row still has `url: ""` and a `resolveId`. `resolve()` returns the link search found only after a quick fetch shows its playlist still answers (kept at most 6h), and resolves afresh otherwise. Resolved URLs carry tokens of different lifetimes per site (VixSrc's `expires=` is 60 days, LookMovie's path stamp 24h, MoviesAPI's `e=43200` 12h, Cinezo's ~6h), so never persist them outside this in-process cache.
 
 **Don't trust file names or content types.** A conforming HLS client copes; a strict one (ffmpeg) needs `-f hls -allowed_extensions ALL -extension_picky 0`.
 - Playlists often have no `.m3u8`: bCine's master is `v.bciney.to/v?url=...`, ShuttleTV's is `cinesrc.st/api/playlist/<token>`.
@@ -90,4 +90,4 @@ A scraper that resolves on a laptop and returns `null` on the server is not nece
 
 ## Every scraper carries maxQuality and fetchMethod
 
-`createScraper` (src/shared.mts) sets `WebLinkScraper.maxQuality` from the site's own `maxQuality` field, and `fetchMethod` from which `SiteAdapter` shape it is: a `BrowserSite` (has `captures`) is `"slow"`, an `HttpSite` (has `httpCaptures`) is `"fast"`. Both are set automatically -- a site module never sets them itself. Needs web-links >= 0.10.0 to show on the settings page; an older host just ignores the fields.
+`createScraper` (src/shared.mts) sets `WebLinkScraper.maxQuality` from the site's own `maxQuality` field, and `fetchMethod`: every shipped site is an `HttpSite`, so it is always `"fast"`. The browser-driven `BrowserSite` survives only in `src/browser.mts` (`createBrowserScraper`, `"slow"`) for research and `src/sites/archive/`; a shipped scraper must never import it -- `scripts/build.mjs` fails if playwright ends up in the bundle. Both are set automatically -- a site module never sets them itself. Needs web-links >= 0.10.0 to show on the settings page; an older host just ignores the fields.
