@@ -11,7 +11,7 @@ Every source considered for this bundle, so the list can be worked through. The 
 
 Sources: the *Stream Aggregators*, *Dedicated-Server*, *Multi-Server* and *P-Stream Forks* sections of <https://fmhy.net/video> (checked 2026-09-27), plus atlantic.st, nepu.io, ee3.me and pressplayz.to supplied directly. Triage was a single homepage fetch per site (status, Cloudflare/Turnstile markers, sign-in redirect) plus a scan of its JS bundles for the upstream players it references. The p-stream GitHub org has no usable code (DMCA-disabled library, Turnstile-gated API), so P-Stream was studied black-box instead: which upstream APIs a live fork calls (STRATEGIES.md).
 
-Totals: implemented 12, candidate 0, blocked 0, possible 0, untriaged 103, rejected 48 (163 sites).
+Totals: implemented 12, candidate 0, blocked 0, possible 0, untriaged 108, rejected 44 (163 sites).
 
 ## Upstream players (where the leverage is)
 
@@ -38,7 +38,7 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | 2embed (2embed.skin) | untriaged | No stream captured in 24s. |
 | peachify.top | rejected | Cloudflare challenge on the embed; its API host (`x.eat-peach.sbs`) answered 522. |
 | vidking.net | rejected | Cloudflare challenge / no connection. |
-| vidsrc.to | rejected | Cloudflare challenge. -- `retriage: FlareSolverr` |
+| vidsrc.to | untriaged | no longer Cloudflare-blocked -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver, homepage loads with HTTP 200 and no challenge at all now. Stream API not identified this pass; needs its own look |
 | vidcore.net / vidcore.io | rejected | 403 (checked earlier). |
 | cinesrc.st | implemented | ShuttleTV's backend (shuttletv scraper). |
 
@@ -74,10 +74,14 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | Site | Section | Note |
 |---|---|---|
 
-## Untriaged (103)
+## Untriaged (108)
 
 | Site | Section | Note |
 |---|---|---|
+| [RidoMovies](https://ridomovies.is/) | dedicated-server | no longer Cloudflare-blocked -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver, clears in ~1s (not a real Cloudflare gate). Stream API not identified this pass; needs its own look |
+| [Bingr](https://bingr.one/) | stream-aggregators | no longer Cloudflare-blocked -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver, clears in ~1s (not a real Cloudflare gate). Stream API not identified this pass; needs its own look |
+| [NOVA](https://novahd.cc/) | stream-aggregators | no longer Cloudflare-blocked -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver, clears in ~1s (not a real Cloudflare gate). Stream API not identified this pass; needs its own look |
+| [Stellar](https://stellar.gdn/) | stream-aggregators | no longer Cloudflare-blocked -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver, clears in ~1s (not a real Cloudflare gate). Stream API not identified this pass; needs its own look |
 | [Abibli](https://abibli.com/) | dedicated-server | no known upstream seen in its bundles; needs its own look |
 | [arc018](https://arc018.stream/) | dedicated-server | no known upstream seen in its bundles; needs its own look |
 | [BFLIX](https://bbflix.one/) | dedicated-server | no known upstream seen in its bundles; needs its own look |
@@ -182,21 +186,20 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | [Watchott or EmnexMovies](https://watchott.org/) | stream-aggregators | no known upstream seen in its bundles; needs its own look |
 | [Willow](https://willow.arlen.icu/) | stream-aggregators | no known upstream seen in its bundles; needs its own look |
 
-## Rejected (48)
+## Rejected (44)
 
 | Site | Section | Note |
 |---|---|---|
 | [AZMovies](https://azmovies.to/) | dedicated-server | dead/gated: redirects to a /verify gate |
-| [CinemaCity](https://cinemacity.cc/) | dedicated-server | Cloudflare challenge / 403 on the homepage (fetch test) -- `retriage: FlareSolverr` |
+| [CinemaCity](https://cinemacity.cc/) | dedicated-server | real Cloudflare managed challenge/Turnstile -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver (plain playwright-core Chromium), does not clear within 30s (real FlareSolverr needs a patched browser to get past this, out of scope here) |
 | [EE3 or RIPS](https://ee3.me/) | dedicated-server | requires sign-up / invite code (account creation is off-limits) |
-| [HollyMovieHD, 2, 3, 4](https://hollymoviehd.cc/) | dedicated-server | Cloudflare challenge / 403 on the homepage (fetch test) -- `retriage: FlareSolverr` |
-| [M4uHD](https://m4uhd.vip) | dedicated-server | Cloudflare challenge / 403 on the homepage (fetch test) -- `retriage: FlareSolverr` |
-| [NEPU, 2, 3, 4](https://nepu.io/) | dedicated-server | Cloudflare challenge on the homepage -- `retriage: FlareSolverr` |
-| [OnionPlay](https://onionplay.st/) | dedicated-server | Cloudflare challenge / 403 on the homepage (fetch test) -- `retriage: FlareSolverr` |
-| [RidoMovies](https://ridomovies.is/) | dedicated-server | Cloudflare challenge / 403 on the homepage (fetch test) -- `retriage: FlareSolverr` |
+| [HollyMovieHD, 2, 3, 4](https://hollymoviehd.cc/) | dedicated-server | real Cloudflare managed challenge/Turnstile -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver (plain playwright-core Chromium), does not clear within 30s (real FlareSolverr needs a patched browser to get past this, out of scope here) |
+| [M4uHD](https://m4uhd.vip) | dedicated-server | real Cloudflare managed challenge/Turnstile -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver (plain playwright-core Chromium), does not clear within 30s (real FlareSolverr needs a patched browser to get past this, out of scope here) |
+| [NEPU, 2, 3, 4](https://nepu.io/) | dedicated-server | real Cloudflare managed challenge/Turnstile -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver (plain playwright-core Chromium), does not clear within 30s (real FlareSolverr needs a patched browser to get past this, out of scope here) |
+| [OnionPlay](https://onionplay.st/) | dedicated-server | real Cloudflare managed challenge/Turnstile -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver (plain playwright-core Chromium), does not clear within 30s (real FlareSolverr needs a patched browser to get past this, out of scope here) |
 | [UniqueStream](https://uniquestream.net/) | dedicated-server | dead/gated: no connection |
-| [DuaFile, 2](https://download.duafile.com/) | multi-server | Cloudflare challenge / 403 on the homepage (fetch test) -- `retriage: FlareSolverr` |
-| [FilmCave or Flixway](https://filmcave.ru/) | multi-server | Cloudflare challenge / 403 on the homepage (fetch test) -- `retriage: FlareSolverr` |
+| [DuaFile, 2](https://download.duafile.com/) | multi-server | real Cloudflare managed challenge/Turnstile -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver (plain playwright-core Chromium), does not clear within 30s (real FlareSolverr needs a patched browser to get past this, out of scope here) |
+| [FilmCave or Flixway](https://filmcave.ru/) | multi-server | real Cloudflare managed challenge/Turnstile -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver (plain playwright-core Chromium), does not clear within 30s (real FlareSolverr needs a patched browser to get past this, out of scope here) |
 | [KiraStreams](https://kirastreams.pages.dev/) | multi-server | dead/gated: 404 |
 | [Moviepire, 2](https://moviepire.org/) | multi-server | dead/gated: empty 136-byte page |
 | [ONOFLIX, 2 or GGFlix](https://onoflix.live/) | multi-server | dead/gated: HTTP 523 (origin down) |
@@ -215,22 +218,19 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | [Rizz Stream](https://rizzking.org/) | p-stream-forks | P-Stream fork: a front-end for the shared `@p-stream/providers` library, which runs in the browser with the extension/userscript injecting headers. No backend of its own to scrape; the library repo (`p-stream/providers`) is blocked on GitHub for a DMCA takedown, so it is not used. Revisit only if a fork exposes its own API. |
 | [StreamWatch](https://streamwatch.online/) | p-stream-forks | P-Stream fork: a front-end for the shared `@p-stream/providers` library, which runs in the browser with the extension/userscript injecting headers. No backend of its own to scrape; the library repo (`p-stream/providers`) is blocked on GitHub for a DMCA takedown, so it is not used. Revisit only if a fork exposes its own API. |
 | [67Movies or PhantomFlix](https://67movies.st/) | stream-aggregators | checked earlier, no usable stream (now a parked-style page) |
-| [Bingr](https://bingr.one/) | stream-aggregators | Cloudflare challenge / 403 on the homepage (fetch test) -- `retriage: FlareSolverr` |
-| [Cinetaro](https://cinetaro.to/) | stream-aggregators | Cloudflare challenge / 403 on the homepage (fetch test) -- `retriage: FlareSolverr` |
-| [Flixtrz](https://flixtrz.com/) | stream-aggregators | Cloudflare challenge / 403 on the homepage (fetch test) -- `retriage: FlareSolverr` |
-| [FlyStream](https://flystream.net/) | stream-aggregators | Cloudflare challenge / 403 on the homepage (fetch test) -- `retriage: FlareSolverr` |
+| [Cinetaro](https://cinetaro.to/) | stream-aggregators | real Cloudflare managed challenge/Turnstile -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver (plain playwright-core Chromium), does not clear within 30s (real FlareSolverr needs a patched browser to get past this, out of scope here) |
+| [Flixtrz](https://flixtrz.com/) | stream-aggregators | real Cloudflare managed challenge/Turnstile -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver (plain playwright-core Chromium), does not clear within 30s (real FlareSolverr needs a patched browser to get past this, out of scope here) |
+| [FlyStream](https://flystream.net/) | stream-aggregators | not Cloudflare -- a proof-of-work gate ("Anubis"), retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver; our Cloudflare-shaped marker set doesn't recognize it and a "cleared" result here can be premature (title still read "Making sure you're not a bot!" on a slower repeat run) -- not solved, not a candidate yet |
 | [Kofi](https://kofi.mov/) | stream-aggregators | dead/gated: 404 |
 | [MeowTV or FlickyStream](https://meowtv.ru/) | stream-aggregators | encrypted responses; WASM key gated by headless detection (bot detection, not bypassed) |
 | [Moovie or StreamAggregator](https://moovie.fun/) | stream-aggregators | DASH only (resolveKind cannot carry it) |
 | [Movie Night](https://movienig.ht/) | stream-aggregators | checked earlier, no usable stream |
-| [NOVA](https://novahd.cc/) | stream-aggregators | Cloudflare challenge / 403 on the homepage (fetch test) -- `retriage: FlareSolverr` |
-| [PopcornMovies or BingeBox](https://popcornmovies.ac/) | stream-aggregators | Cloudflare challenge -- `retriage: FlareSolverr` |
+| [PopcornMovies or BingeBox](https://popcornmovies.ac/) | stream-aggregators | real Cloudflare managed challenge/Turnstile -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver (plain playwright-core Chromium), does not clear within 30s (real FlareSolverr needs a patched browser to get past this, out of scope here) |
 | [Reelix or Coreflix](https://reelix.ac/) | stream-aggregators | vidcore backend answers 403 |
-| [Spacedom](https://spacedom.live/) | stream-aggregators | Cloudflare challenge / 403 on the homepage (fetch test) -- `retriage: FlareSolverr` |
+| [Spacedom](https://spacedom.live/) | stream-aggregators | real Cloudflare managed challenge/Turnstile -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver (plain playwright-core Chromium), does not clear within 30s (real FlareSolverr needs a patched browser to get past this, out of scope here) |
 | [SpenFlix](https://watch.spencerdevs.xyz/) | stream-aggregators | CDN 403s non-browser TLS |
-| [Stellar](https://stellar.gdn/) | stream-aggregators | Turnstile -- `retriage: FlareSolverr` |
 | [Streamo](https://streamo.pro/) | stream-aggregators | captcha, no stream reachable |
 | [Surface Stream](https://watchsurface.stream/) | stream-aggregators | dead/gated: no connection |
-| [Vivarium](https://viv.st/) | stream-aggregators | Turnstile -- `retriage: FlareSolverr` |
-| [Way2Movies, 2](https://beta.way2movies.live/) | stream-aggregators | Cloudflare challenge -- `retriage: FlareSolverr` |
+| [Vivarium](https://viv.st/) | stream-aggregators | real Cloudflare managed challenge/Turnstile -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver (plain playwright-core Chromium), does not clear within 30s (real FlareSolverr needs a patched browser to get past this, out of scope here) |
+| [Way2Movies, 2](https://beta.way2movies.live/) | stream-aggregators | real Cloudflare managed challenge/Turnstile -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver (plain playwright-core Chromium), does not clear within 30s (real FlareSolverr needs a patched browser to get past this, out of scope here) |
 | [ZXCSTREAM](https://zxcprime.icu/) | stream-aggregators | DASH only |
