@@ -117,6 +117,8 @@ The vidnest player also wraps some upstreams in its own proxies (`vidproxy.*.wor
 
 If ever needed: cheapest route is a `BrowserSite` that loads `https://vidlink.pro/movie/{id}` and captures the `media` requests (that is what the 28 s probe did), returning `resolveKind: "file"` links -- but `pickBestCapture` is HLS-only today, so it needs a file path first. Low priority: moviebox is also reachable elsewhere.
 
+**Tried again 2026-09-27, dead end.** Fetching `/api/b/movie/{id}` directly (bypassing the WASM entirely, since it's a plain `GET`) works and returns `stream.qualities` with plain, already-signed URLs straight on `bcdn.hakunaymatata.com` -- no wrapper -- for 360p/480p/1080p, each flagged `"requiresProxy": true`. But the site's own player never issues an ordinary browser request for one of them either: with a real page open and the video visibly playing, no `bcdn.hakunaymatata.com` request ever appears in the page's network log, so whatever the player does to actually pull the bytes is invisible to `page.on('request')` (worker-thread fetch, or something the WASM does directly) -- there's nothing for a `BrowserSite`'s capture to intercept. And the returned URL is unusable on its own: fetching it directly (even with the right Referer) answers `428 Forbidden`, whether from this machine or from inside the same browser context that requested it, so it's bound to something beyond a Referer/Origin check -- consistent with `requiresProxy`. Not pursued further: this isn't a header or signature we're missing, it's the CDN refusing every requester that isn't the site's own undocumented internal client. Still `possible`, still low priority.
+
 ---
 
 ## Duplicate content pools (why not all of these are worth shipping)
@@ -145,3 +147,11 @@ Repeated on the Aether fork (aether.ist) with a TV episode (Game of Thrones S1E1
 The forks also call `sub.wyzie.io`, `sub.vdrk.site` (subtitles), `api.theintrodb.org`, `api.skipdb.tv`, `v3-cinemeta.strem.io`: metadata, not streams. Repeat the method on another fork or another title to find more upstreams (the source list changes per media type, so try a TV episode too).
 
 Repeated again on the Basement fork (basementx.lol) with the same movie: it surfaced a `videasy.to` master (2160p, full length) reachable with just `Origin`/`Referer: player.videasy.to`, but only through Basement's own signed backend (`be.basementx.lol`/`dim.basementx.lol`, per-request `sig`+`exp`) -- not reproducible without their key, so not built. See SOURCES.md's `videasy.net / videasy.to` row.
+
+**2026-09-27, six more forks checked, one hit (Aether above), rest dead ends or malicious:**
+- pstream.cfd: down (Cloudflare 524) that day.
+- icefy.top, streamwatch.online: both a bait popup ("install this extension to unlock the content") / an ad redirect to an unrelated Opera-install page on load, before any player runs -- malvertising, not a real fork. Skip on sight; don't interact with either kind of page.
+- cinecat.eu: surfaced `cdn.hls.lol/content/{movie|tv}/...` (Atlantic's own "Aphrodite" route, already flagged above as needing a client-computed header) -- but every title's `payload` proxies to the exact same `totallyacdn.org` response, the Atlantic *landing page* HTML, regardless of `tmdb_id`. Dead: this route is decommissioned, not just gated.
+- cinefork.net: surfaced `cdn.reelvault.click/movie_{tmdb}/vod.m3u8` -- the domain doesn't resolve (NXDOMAIN) at all, so this "source" is simply broken on their own site. Its other backend (`/api/ext/nest/...`) is vidnest's `yflix` upstream, already noted above as PNG-segment/not real video.
+
+Six forks in, the easy wins from this method are exhausted: what's left needs either reverse-engineering a heavier client (videasy's Next.js bundle) or chasing domains that don't even resolve. Diminishing returns; stop here unless a genuinely new fork surfaces.
