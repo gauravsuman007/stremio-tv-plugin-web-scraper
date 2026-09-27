@@ -140,4 +140,6 @@ Upstreams seen for Inception, and what came of each:
 | `api.speedracelight.com/{hdmovie,cdn,lamovie,meine}/sources-with-title?title=&mediaType=&year=&tmdbId=&imdbId=&enc=2&seed=` (seed from `/seed?mediaId=TMDB`, 30 s TTL) | Not built. `hdmovie`/`cdn` return an encrypted blob whose scheme is not visible from outside (it lives in the blocked library); `lamovie`/`meine` 500. Left as `possible`. |
 | `proxy.valhallastream.com/m3u8-proxy` | Rivestream's proxy; unwrapped, not used. |
 
+Repeated on the Aether fork (aether.ist) with a TV episode (Game of Thrones S1E1): it surfaced `lul.aether.cx` above, plus its own TMDB/OpenSubtitles/analytics calls (not streams) and `nebula.aether.cx` (always 502).
+
 The forks also call `sub.wyzie.io`, `sub.vdrk.site` (subtitles), `api.theintrodb.org`, `api.skipdb.tv`, `v3-cinemeta.strem.io`: metadata, not streams. Repeat the method on another fork or another title to find more upstreams (the source list changes per media type, so try a TV episode too).

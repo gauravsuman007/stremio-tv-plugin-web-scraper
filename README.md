@@ -1,19 +1,19 @@
 # stremio-tv-plugin-web-scraper
 
 Web-link scrapers for several streaming sites (CineJoy, Flixer, bCine, Movy,
-ShuttleTV, 7Movies, Cinezo, MoviesAPI, Vidrock, VixSrc, Atlantic, Vidlove, Vidnest, Rivestream, LookMovie): each searches its site for a title and returns
+ShuttleTV, 7Movies, Cinezo, MoviesAPI, Vidrock, VixSrc, Atlantic, Vidlove, Vidnest, Rivestream, LookMovie, Aether): each searches its site for a title and returns
 the best direct, per-quality video link, ready to be handed to a player.
 They ship as one package, `streaming-sites`, for `stremio-tv-plugin-web-links`.
 
 Most sites need a real browser (see "Why browser automation" below); Cinezo
-MoviesAPI, Vidrock, VixSrc, Atlantic, Vidlove, Vidnest, Rivestream and LookMovie have open APIs and are plain HTTP.
+MoviesAPI, Vidrock, VixSrc, Atlantic, Vidlove, Vidnest, Rivestream, LookMovie and Aether have open APIs and are plain HTTP.
 
 ## Sites
 
-`dist/` is one package (`streaming-sites`) that exports fifteen scrapers, each registered by the
+`dist/` is one package (`streaming-sites`) that exports sixteen scrapers, each registered by the
 host under its own id. Six sites work the same way (open a player URL keyed
 by TMDB id in a real browser, read the media URL the player requests); the
-seventh to fifteenth, Cinezo, MoviesAPI, Vidrock, VixSrc, Atlantic, Vidlove, Vidnest, Rivestream and LookMovie, ask their player's JSON API directly (an `HttpSite` instead of
+seventh to sixteenth, Cinezo, MoviesAPI, Vidrock, VixSrc, Atlantic, Vidlove, Vidnest, Rivestream, LookMovie and Aether, ask their player's JSON API directly (an `HttpSite` instead of
 a `BrowserSite`, no Chromium involved). All share `src/shared.mts` (TMDB lookup, capture, playlist verification,
 best-stream picking) and each site is one small module in `src/sites/`.
 Every scraper's `search()` returns one row; `resolve()` tries all of that
@@ -43,6 +43,7 @@ and then.
 | Vidnest | new.vidnest.fun (`nextgencloudfabric`) | 1080p | No browser: JSON in a custom-alphabet base64 (no key). Same catalogue as Atlantic/Vidlove. 3-7s. |
 | Rivestream | scrapper.rivestream.app (`vanguard`) | 4K | No browser: JSON API, unwraps its proxy URL; needs `Origin` (web-links >= 0.9.0). 4K HEVC master on the cinejoy CDN. <1s. Found by watching P-Stream. |
 | LookMovie | lookmovie2.to | 480p (some 720/1080) | No browser: search -> play page -> access API. Movies and TV. Mostly 480p; some AES-128. 3-5s. Found by watching P-Stream. |
+| Aether | lul.aether.cx | 1080p | No browser: JSON API, no headers anywhere. Backend of the Aether P-Stream fork. 1-3s. Found by watching P-Stream. |
 
 Checked and left out:
 - watch.spencerdevs.xyz plays in a browser, but its CDN returns 403 to any
