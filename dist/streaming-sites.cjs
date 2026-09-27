@@ -128,8 +128,11 @@ async function leafDuration(fetchImpl, url, headers2) {
   return total;
 }
 function variantHeight(variant) {
-  return Number.parseInt(variant.resolution?.split("x")[1] ?? "0", 10) || 0;
+  const [width = 0, height = 0] = (variant.resolution ?? "").split("x").map((n) => Number.parseInt(n, 10) || 0);
+  const tall = Math.max(height, Math.round(width * 9 / 16));
+  return STANDARD_HEIGHTS.find((standard) => tall >= standard * 0.95) ?? tall;
 }
+var STANDARD_HEIGHTS = [2160, 1440, 1080, 720, 576, 480, 360, 240];
 function heightFromUrl(url) {
   return Number.parseInt(/[-_/.]s?(\d{3,4})p(?=[-_/.?]|$)/i.exec(url)?.[1] ?? "0", 10) || 0;
 }
@@ -1303,5 +1306,5 @@ var shuttletvSite = {
 var shuttletv_default = createScraper(shuttletvSite);
 
 // src/index.mts
-var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default].map((scraper) => ({ ...scraper, version: "1.21.0" }));
+var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default].map((scraper) => ({ ...scraper, version: "1.21.1" }));
 var index_default = scrapers;
