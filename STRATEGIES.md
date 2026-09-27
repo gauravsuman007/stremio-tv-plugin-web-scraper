@@ -143,3 +143,5 @@ Upstreams seen for Inception, and what came of each:
 Repeated on the Aether fork (aether.ist) with a TV episode (Game of Thrones S1E1): it surfaced `lul.aether.cx` above, plus its own TMDB/OpenSubtitles/analytics calls (not streams) and `nebula.aether.cx` (always 502).
 
 The forks also call `sub.wyzie.io`, `sub.vdrk.site` (subtitles), `api.theintrodb.org`, `api.skipdb.tv`, `v3-cinemeta.strem.io`: metadata, not streams. Repeat the method on another fork or another title to find more upstreams (the source list changes per media type, so try a TV episode too).
+
+Repeated again on the Basement fork (basementx.lol) with the same movie: it surfaced a `videasy.to` master (2160p, full length) reachable with just `Origin`/`Referer: player.videasy.to`, but only through Basement's own signed backend (`be.basementx.lol`/`dim.basementx.lol`, per-request `sig`+`exp`) -- not reproducible without their key, so not built. See SOURCES.md's `videasy.net / videasy.to` row.
