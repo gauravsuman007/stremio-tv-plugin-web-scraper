@@ -621,6 +621,145 @@ var vidloveSite = {
 };
 var vidlove_default = createScraper(vidloveSite);
 
+// src/sites/vidnest.mts
+var API3 = "https://new.vidnest.fun/";
+var PLAYER3 = "https://vidnest.fun/";
+var MEDIA_REFERRER = "https://nextgencloudfabric.com/";
+var ALPHABET = "RB0fpH8ZEyVLkv7c2i6MAJ5u3IKFDxlS1NTsnGaqmXYdUrtzjwObCgQP94hoeW+/=";
+var API_TIMEOUT_MS7 = 2e4;
+var LOOKUP = new Map([...ALPHABET].map((char, index) => [char, index]));
+var PAD = 64;
+function decode(data) {
+  const bytes = [];
+  for (let at = 0; at < data.length; at += 4) {
+    const chunk = data.slice(at, at + 4).padEnd(4, "=");
+    const [a = PAD, b = PAD, c = PAD, d = PAD] = [...chunk].map((char) => LOOKUP.get(char) ?? PAD);
+    bytes.push((a << 2 | b >> 4) & 255);
+    if (c !== PAD) bytes.push(((b & 15) << 4 | c >> 2) & 255);
+    if (d !== PAD) bytes.push(((c & 3) << 6 | d) & 255);
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+var vidnestSite = {
+  id: "vidnest",
+  name: "Vidnest",
+  referrer: MEDIA_REFERRER,
+  maxQuality: "1080p",
+  async *httpCaptures({ match, season, episode }, ctx) {
+    const path = match.mediaType === "movie" ? `movie/${match.tmdbId}` : `tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
+    const response = await ctx.fetch(`${API3}nextgencloudfabric/${path}`, {
+      headers: { Referer: PLAYER3, Origin: PLAYER3.slice(0, -1) },
+      signal: AbortSignal.timeout(API_TIMEOUT_MS7)
+    });
+    if (!response.ok) return;
+    let body;
+    try {
+      body = await response.json();
+      if (body.encrypted && body.data) body = JSON.parse(decode(body.data));
+    } catch {
+      return;
+    }
+    const urls = [...new Set([body.url, ...body.all_urls ?? []].filter((url) => !!url))];
+    for (const [index, mediaUrl] of urls.entries()) yield { mediaUrl, label: `Cloud ${index + 1}` };
+  }
+};
+var vidnest_default = createScraper(vidnestSite);
+
+// src/sites/rivestream.mts
+var API4 = "https://scrapper.rivestream.app/api/provider";
+var API_TIMEOUT_MS8 = 2e4;
+var rivestreamSite = {
+  id: "rivestream",
+  name: "Rivestream",
+  referrer: "https://cinejoy.pk/",
+  headers: { Origin: "https://cinejoy.pk" },
+  maxQuality: "4K",
+  async *httpCaptures({ match, season, episode }, ctx) {
+    const query = match.mediaType === "movie" ? `id=${match.tmdbId}` : `id=${match.tmdbId}&season=${season ?? 1}&episode=${episode ?? 1}`;
+    const response = await ctx.fetch(`${API4}?provider=vanguard&${query}`, { signal: AbortSignal.timeout(API_TIMEOUT_MS8) });
+    if (!response.ok) return;
+    const body = await response.json();
+    for (const source of body.data?.sources ?? []) {
+      if (!source.url || source.format && source.format !== "hls") continue;
+      let mediaUrl = source.url;
+      try {
+        const wrapped = new URL(source.url).searchParams.get("url");
+        if (wrapped) mediaUrl = wrapped;
+      } catch {
+        continue;
+      }
+      yield { mediaUrl, label: "Vanguard" };
+    }
+  }
+};
+var rivestream_default = createScraper(rivestreamSite);
+
+// src/sites/lookmovie.mts
+var SITE5 = "https://www.lookmovie2.to/";
+var API_TIMEOUT_MS9 = 2e4;
+var normalise = (text) => text.toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]+/g, "");
+var QUALITY_ORDER = ["1080p", "1080", "720p", "720", "480p", "480", "360p", "360"];
+async function getText(ctx, url) {
+  const response = await ctx.fetch(url, { headers: { Referer: SITE5 }, signal: AbortSignal.timeout(API_TIMEOUT_MS9) });
+  return response.ok ? response.text() : null;
+}
+var lookmovieSite = {
+  id: "lookmovie",
+  name: "LookMovie",
+  referrer: SITE5,
+  maxQuality: "1080p",
+  async *httpCaptures({ match, season, episode }, ctx) {
+    const kind = match.mediaType === "movie" ? "movies" : "shows";
+    const search = await getText(ctx, `${SITE5}api/v1/${kind}/do-search/?q=${encodeURIComponent(match.title)}`);
+    if (!search) return;
+    let results;
+    try {
+      results = JSON.parse(search).result ?? [];
+    } catch {
+      return;
+    }
+    const wanted = normalise(match.title);
+    const hit = results.find((entry) => normalise(entry.title) === wanted && (!match.year || entry.year === match.year)) ?? results.find((entry) => normalise(entry.title) === wanted);
+    if (!hit) return;
+    const page = await getText(ctx, `${SITE5}${kind}/play/${hit.slug}`);
+    if (!page) return;
+    const hash = /hash:\s*["']([^"']+)["']/.exec(page)?.[1];
+    const expires = /expires:\s*(\d+)/.exec(page)?.[1];
+    if (!hash || !expires) return;
+    let access;
+    if (match.mediaType === "movie") {
+      const id = /id_movie:\s*(\d+)/.exec(page)?.[1];
+      if (!id) return;
+      access = `movie-access?id_movie=${id}`;
+    } else {
+      const raw = /window\.seasons='(.*)';\s*\n/.exec(page)?.[1];
+      if (!raw) return;
+      let episodeId;
+      try {
+        const seasons = JSON.parse(raw.replace(/\\(['"\\])/g, "$1"));
+        episodeId = seasons[String(season ?? 1)]?.episodes?.[String(episode ?? 1)]?.id_episode;
+      } catch {
+        return;
+      }
+      if (!episodeId) return;
+      access = `episode-access?id_episode=${episodeId}`;
+    }
+    const body = await getText(ctx, `${SITE5}api/v1/security/${access}&hash=${hash}&expires=${expires}`);
+    if (!body) return;
+    let streams;
+    try {
+      streams = JSON.parse(body).streams ?? {};
+    } catch {
+      return;
+    }
+    for (const quality of QUALITY_ORDER) {
+      const mediaUrl = streams[quality];
+      if (mediaUrl) yield { mediaUrl, label: quality.endsWith("p") ? quality : `${quality}p` };
+    }
+  }
+};
+var lookmovie_default = createScraper(lookmovieSite);
+
 // src/sites/shuttletv.mts
 var shuttletvSite = {
   id: "shuttletv",
@@ -636,5 +775,5 @@ var shuttletvSite = {
 var shuttletv_default = createScraper(shuttletvSite);
 
 // src/index.mts
-var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default].map((scraper) => ({ ...scraper, version: "1.14.1" }));
+var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default].map((scraper) => ({ ...scraper, version: "1.15.0" }));
 var index_default = scrapers;
