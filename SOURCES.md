@@ -11,7 +11,7 @@ Every source considered for this bundle, so the list can be worked through. The 
 
 Sources: the *Stream Aggregators*, *Dedicated-Server*, *Multi-Server* and *P-Stream Forks* sections of <https://fmhy.net/video> (checked 2026-09-27), plus atlantic.st, nepu.io, ee3.me and pressplayz.to supplied directly. Triage was a single homepage fetch per site (status, Cloudflare/Turnstile markers, sign-in redirect) plus a scan of its JS bundles for the upstream players it references. The p-stream GitHub org has no usable code (DMCA-disabled library, Turnstile-gated API), so P-Stream was studied black-box instead: which upstream APIs a live fork calls (STRATEGIES.md).
 
-Totals: implemented 12, candidate 0, blocked 0, possible 0, untriaged 108, rejected 44 (163 sites).
+Totals: implemented 12, candidate 0, blocked 0, possible 3, untriaged 104, rejected 45 (163 sites).
 
 ## Upstream players (where the leverage is)
 
@@ -38,7 +38,7 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | 2embed (2embed.skin) | untriaged | No stream captured in 24s. |
 | peachify.top | rejected | Cloudflare challenge on the embed; its API host (`x.eat-peach.sbs`) answered 522. |
 | vidking.net | rejected | Cloudflare challenge / no connection. |
-| vidsrc.to | untriaged | no longer Cloudflare-blocked -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver, homepage loads with HTTP 200 and no challenge at all now. Stream API not identified this pass; needs its own look |
+| vidsrc.to | possible | 2026-09-27: no real Cloudflare gate (homepage loads plain). `embed/movie/<tmdb>` redirects through `vsembed.ru` (`vs_src.php?type=movie&id=<tmdb>`) to `cloudorchestranova.com/embed/movie/<tmdb>?vs=<token>`, which loads `vsdec.js` -- an obfuscated decoder for an encrypted source blob, the same "ProRCP"-style scheme vidsrc.to is publicly known for. No stream URL recovered; would need reverse-engineering `vsdec.js`'s decryption, not attempted this pass. |
 | vidcore.net / vidcore.io | rejected | 403 (checked earlier). |
 | cinesrc.st | implemented | ShuttleTV's backend (shuttletv scraper). |
 
@@ -69,19 +69,18 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | Site | Section | Note |
 |---|---|---|
 
-## Possible (leads) (0)
+## Possible (leads) (3)
 
 | Site | Section | Note |
 |---|---|---|
+| [RidoMovies](https://ridomovies.is/) | dedicated-server | 2026-09-27: plain fetch of `/movies/<slug>` (curl 403s the raw domain, but the site itself HTTP-redirects to `ridomovie.to` and loads fine there with a browser UA -- not a real Cloudflare gate, `solveInProcess` not needed). `/movies/inception` resolves; the player is a same-origin iframe whose real `src` is only set on click, and every click target on the page is intercepted by an ad overlay (`directyp.org` popunder) in an automated Chromium session, so the actual stream request was never captured this pass. Needs a real click-through (dismiss/close the ad tab first) or a devtools-attached manual session. Not attempted: cookie check on the eventual player. |
+| [Bingr](https://bingr.one/) | stream-aggregators | 2026-09-27: no Cloudflare gate in practice (Turnstile script loads but never blocks). `POST https://api.bingr.one/api/stream` with `{"srv":"s40","t":"movie","id":"<tmdb>","query":{"title":...,"year":...}}` (plain JSON, `Referer: https://bingr.one/`, no auth header, no cookie) returns `{"scraperName":"DarkMatter","sources":[{"url":"https://img.rousav.tech/media/<id>/index.m3u8",...}]}`. Verified with ffmpeg: the master (despite being named `index.m3u8` -> `tiles.m3u8` -> segments named `tiles/00000.png`) is real H.264 1920x800 video, full 2h28m runtime for Inception, decodes cleanly for 8s with only `Referer` (no cookie). But the master has no `#EXT-X-MEDIA` audio reference at all -- audio lives on a completely separate, unlinked `track_english.m3u8` (confirmed AAC via ffprobe on its segments) that the relay has no way to attach, so as returned this is video-only. Needs checking whether another `srv` value (only `s40`/DarkMatter tried) gives a master that properly links its audio track before this is buildable. |
+| [Stellar](https://stellar.gdn/) | stream-aggregators | 2026-09-27: no real Cloudflare gate. The watch page (`/watch/movie/<tmdb>`) calls `POST https://api.stellar.gdn/api/resolve` with an encrypted body (`q`/`s`/`t`/`d` fields, opaque) and gets back a signed `cdn.reallyfast.ch/stream/<id>?e=<exp>&sig=<hex>` URL. That master fetches fine with just `Referer: https://stellar.gdn/` (HTTP 200, real playlist: 360p/1080p/4K variants each with a proper `#EXT-X-MEDIA` AUDIO group -- exactly the shape AGENTS.md wants) but every leaf/segment URL under it (`cdn.reallyfast.ch/v/...`) answered `502` on every attempt, with fresh tokens, with and without `Origin`, across all three renditions and both audio tracks. Either the reallyfast.ch origin is flaky, or it wants something (TLS fingerprint, a session cookie from `api.stellar.gdn`) a plain curl doesn't send. The `/api/resolve` request body itself is encrypted client-side (same shape as the already-`possible` `api.speedracelight.com` entry above) so this can't be reproduced without replaying the site's own JS. Not verified end to end; do not implement from this alone. |
 
-## Untriaged (108)
+## Untriaged (104)
 
 | Site | Section | Note |
 |---|---|---|
-| [RidoMovies](https://ridomovies.is/) | dedicated-server | no longer Cloudflare-blocked -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver, clears in ~1s (not a real Cloudflare gate). Stream API not identified this pass; needs its own look |
-| [Bingr](https://bingr.one/) | stream-aggregators | no longer Cloudflare-blocked -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver, clears in ~1s (not a real Cloudflare gate). Stream API not identified this pass; needs its own look |
-| [NOVA](https://novahd.cc/) | stream-aggregators | no longer Cloudflare-blocked -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver, clears in ~1s (not a real Cloudflare gate). Stream API not identified this pass; needs its own look |
-| [Stellar](https://stellar.gdn/) | stream-aggregators | no longer Cloudflare-blocked -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver, clears in ~1s (not a real Cloudflare gate). Stream API not identified this pass; needs its own look |
 | [Abibli](https://abibli.com/) | dedicated-server | no known upstream seen in its bundles; needs its own look |
 | [arc018](https://arc018.stream/) | dedicated-server | no known upstream seen in its bundles; needs its own look |
 | [BFLIX](https://bbflix.one/) | dedicated-server | no known upstream seen in its bundles; needs its own look |
@@ -186,7 +185,7 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | [Watchott or EmnexMovies](https://watchott.org/) | stream-aggregators | no known upstream seen in its bundles; needs its own look |
 | [Willow](https://willow.arlen.icu/) | stream-aggregators | no known upstream seen in its bundles; needs its own look |
 
-## Rejected (44)
+## Rejected (45)
 
 | Site | Section | Note |
 |---|---|---|
@@ -225,6 +224,7 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | [MeowTV or FlickyStream](https://meowtv.ru/) | stream-aggregators | encrypted responses; WASM key gated by headless detection (bot detection, not bypassed) |
 | [Moovie or StreamAggregator](https://moovie.fun/) | stream-aggregators | DASH only (resolveKind cannot carry it) |
 | [Movie Night](https://movienig.ht/) | stream-aggregators | checked earlier, no usable stream |
+| [NOVA](https://novahd.cc/) | stream-aggregators | 2026-09-27: no Cloudflare gate, and its API is plain HTTP -- `GET https://novahd.cc/api/sources?type=movie&tmdbId=<tmdb>` (no browser step, no cookie) returns `{"sources":[{"url":"https://novahd.cc/api/hls/index.m3u8?e=<token>","provider":"Falcon",...}]}`. But the playlist it returns is a decoy: every one of its 100 segments is the literal relative path `s.ts` (not per-segment URLs), and fetching `api/hls/s.ts` -- with or without the `e=` token, with or without `Referer` -- always returns the exact same 104KB clip (byte-identical, confirmed with `cmp`) of a generic placeholder (ffprobe: H.264 1280x720 + AAC, ~6s). The real per-title content is evidently gated behind something the plain API call doesn't supply (likely a `cf_clearance`/session cookie tied to the Turnstile widget that loads on-page but wasn't solved here) -- not a Cloudflare-challenge problem, a decoy-stream problem. Not implementable as-is. |
 | [PopcornMovies or BingeBox](https://popcornmovies.ac/) | stream-aggregators | real Cloudflare managed challenge/Turnstile -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver (plain playwright-core Chromium), does not clear within 30s (real FlareSolverr needs a patched browser to get past this, out of scope here) |
 | [Reelix or Coreflix](https://reelix.ac/) | stream-aggregators | vidcore backend answers 403 |
 | [Spacedom](https://spacedom.live/) | stream-aggregators | real Cloudflare managed challenge/Turnstile -- retried 2026-09-27 with `src/flaresolverr.mts`'s in-process solver (plain playwright-core Chromium), does not clear within 30s (real FlareSolverr needs a patched browser to get past this, out of scope here) |
