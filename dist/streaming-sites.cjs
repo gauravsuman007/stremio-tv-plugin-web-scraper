@@ -796,5 +796,5 @@ var shuttletvSite = {
 var shuttletv_default = createScraper(shuttletvSite);
 
 // src/index.mts
-var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default].map((scraper) => ({ ...scraper, version: "1.17.1" }));
+var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default].map((scraper) => ({ ...scraper, version: "1.17.2" }));
 var index_default = scrapers;
