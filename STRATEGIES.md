@@ -64,7 +64,7 @@ Checked: movie 27205, 238, 157336, 872585 (API answers), TV 1399 S1E1 (API answe
 
 ---
 
-## api.vidlove.cc  (status: candidate)
+## api.vidlove.cc  (status: implemented in 1.14.0 -- `src/sites/vidlove.mts`)
 
 Pure HTTP, Cinezo-style API.
 
@@ -72,7 +72,7 @@ Pure HTTP, Cinezo-style API.
 
 ---
 
-## atlantic.st  (status: candidate)
+## atlantic.st  (status: implemented in 1.14.0 -- `src/sites/atlantic.mts`; needs web-links >= 0.9.0)
 
 Pure HTTP; AES-GCM with a key shipped in the client bundle (same scheme as vidrock, different key).
 

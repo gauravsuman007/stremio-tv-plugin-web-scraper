@@ -23,8 +23,8 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | moviesapi.to / vidspark.to | implemented | Shipped in 1.12.0. Best find: real 1080p, static `x-player-key`, plain JSON API. Also the backend of PressPlay and vidnest `vidxyz`. See STRATEGIES.md. |
 | vixsrc.to | implemented | Shipped in 1.13.0 (needs web-links >= 0.8.3 for its separate audio playlist). Pure HTTP; tokenised master from the embed page. Italian-first catalogue. Backend of Streaming Unity. See STRATEGIES.md. |
 | vidrock.net | implemented | Shipped in 1.13.0 (Orion + Luna; sends Origin via WebLink.headers, needs web-links >= 0.9.0). Pure HTTP; AES-GCM with a key in the bundle; use servers Orion (1080p) and Luna, skip Atlas (dead segments). Needs Origin. See STRATEGIES.md. |
-| api.vidlove.cc (player.vidlove.cc, 111movies.net) | candidate | Pure HTTP, Cinezo-style API, `sources=vidapi`. See STRATEGIES.md. |
-| atlantic.st (stream.hls.lol) | candidate | Pure HTTP; AES-GCM key in the bundle; three servers. See STRATEGIES.md. |
+| api.vidlove.cc (player.vidlove.cc, 111movies.net) | implemented | Shipped in 1.14.0 (`vidlove`). Pure HTTP, `sources=vidapi`; Referer alone plays. Same content pool as Atlantic/vidrock Luna. See STRATEGIES.md. |
+| atlantic.st (stream.hls.lol) | implemented | Shipped in 1.14.0 (`atlantic`; needs web-links >= 0.9.0 for Origin). Pure HTTP; AES-GCM key in the bundle; three servers. See STRATEGIES.md. |
 | new.vidnest.fun | candidate | Keyless custom-alphabet base64; routes per upstream. `nextgencloudfabric` and `allmovies` (Hindi) work; others broken or PNG-segment. See STRATEGIES.md. |
 | vidzee (player.vidzee.wtf / core.vidzee.wtf) | rejected | Redundant: its working output is vidrock's (Atlas CDN, whose segments are 403 "domain forbidden") and vidnest's MKV route. |
 | vidlink.pro | possible | Id minted by a Go WASM module (`fu.wasm` + libsodium); streams are moviebox MP4 files via `noon.mooncase.online`. Needs a BrowserSite and MP4/`file` support in `pickBestCapture`. Low priority. See STRATEGIES.md. |
