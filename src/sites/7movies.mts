@@ -39,6 +39,8 @@ const sevenMoviesSite: HttpSite = {
     name: "7Movies",
     referrer: `${BASE}/`,
     maxQuality: "1080p",
+    // Its links 404 within ~17 min (6h check, 2026-09-27): resolve afresh after 5.
+    linkMaxAgeMs: 5 * 60_000,
     async *httpCaptures({ match, season, episode }, ctx): AsyncGenerator<Capture> {
         const path = match.mediaType === "movie" ? `movie/${match.tmdbId}` : `tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
         const headers = { Referer: `${BASE}/embed2/${path}` };

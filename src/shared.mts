@@ -276,6 +276,9 @@ export interface SiteBase {
     /** The best resolution seen across the titles this adapter was tested on
      *  (see README.md). Shown in the scraper's name on the plugins page. */
     maxQuality: string;
+    /** How long a link found for this site is handed out again without a
+     *  fresh resolve, when its tokens live less than `LINK_MAX_AGE_MS`. */
+    linkMaxAgeMs?: number;
     /** Cheap check run before anything else; false drops the site's rows. */
     available?(ctx: ScraperContext): Promise<boolean>;
 }
@@ -464,7 +467,10 @@ function displayName(match: TmdbMatch): string {
     link that fails the check is resolved afresh. `LINK_MAX_AGE_MS` is only
     an upper bound on trusting a check that passed.
 */
-const LINK_MAX_AGE_MS = 6 * 60 * 60_000;
+/* Measured 2026-09-27 over 6h: Flixer, Movy and Vidnest masters die at ~3.3h,
+   7Movies' within 17 min; the rest still played at 6h. A link that still
+   answers can die minutes later, mid-film, so trust it for well under that. */
+const LINK_MAX_AGE_MS = 2 * 60 * 60_000;
 const PROBE_TIMEOUT_MS = 5_000;
 const linkCache = new Map<string, { at: number; link: WebLink }>();
 
@@ -545,7 +551,7 @@ function sharedCandidates(site: HttpSite, query: WebLinkQuery, ctx: ScraperConte
  */
 async function resolveSite(site: HttpSite, resolveId: string, query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink | null> {
     const cached = linkCache.get(linkKey(resolveId, query));
-    if (cached && Date.now() - cached.at < LINK_MAX_AGE_MS && (await stillPlays(cached.link, ctx))) return cached.link;
+    if (cached && Date.now() - cached.at < (site.linkMaxAgeMs ?? LINK_MAX_AGE_MS) && (await stillPlays(cached.link, ctx))) return cached.link;
 
     let found = await sharedCandidates(site, query, ctx);
     // A run that was already under way may predate this row's link going stale: one fresh try.
