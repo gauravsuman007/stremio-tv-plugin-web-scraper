@@ -257,7 +257,7 @@ function collectCandidates(site, captures, match, ctx, deadlineMs) {
 function displayName(match) {
   return match.year ? `${match.title} (${match.year})` : match.title;
 }
-var LINK_MAX_AGE_MS = 6 * 60 * 6e4;
+var LINK_MAX_AGE_MS = 2 * 60 * 6e4;
 var PROBE_TIMEOUT_MS = 5e3;
 var linkCache = /* @__PURE__ */ new Map();
 function linkKey(resolveId, query) {
@@ -310,7 +310,7 @@ function sharedCandidates(site, query, ctx) {
 }
 async function resolveSite(site, resolveId, query, ctx) {
   const cached = linkCache.get(linkKey(resolveId, query));
-  if (cached && Date.now() - cached.at < LINK_MAX_AGE_MS && await stillPlays(cached.link, ctx)) return cached.link;
+  if (cached && Date.now() - cached.at < (site.linkMaxAgeMs ?? LINK_MAX_AGE_MS) && await stillPlays(cached.link, ctx)) return cached.link;
   let found = await sharedCandidates(site, query, ctx);
   if (!found?.candidates.length && cached) found = await sharedCandidates(site, query, ctx);
   if (!found) return null;
@@ -370,6 +370,8 @@ var sevenMoviesSite = {
   name: "7Movies",
   referrer: `${BASE}/`,
   maxQuality: "1080p",
+  // Its links 404 within ~17 min (6h check, 2026-09-27): resolve afresh after 5.
+  linkMaxAgeMs: 5 * 6e4,
   async *httpCaptures({ match, season, episode }, ctx) {
     const path = match.mediaType === "movie" ? `movie/${match.tmdbId}` : `tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
     const headers2 = { Referer: `${BASE}/embed2/${path}` };
