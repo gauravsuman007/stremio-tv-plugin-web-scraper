@@ -1820,5 +1820,5 @@ var filmoSite = {
 var filmo_default = createScraper(filmoSite);
 
 // src/index.mts
-var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default, xpass_default, arc018_default, filmo_default].map((scraper) => ({ ...scraper, version: "1.23.0" }));
+var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default, xpass_default, arc018_default, filmo_default].map((scraper) => ({ ...scraper, version: "1.23.1" }));
 var index_default = scrapers;
