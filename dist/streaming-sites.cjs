@@ -1819,6 +1819,65 @@ var filmoSite = {
 };
 var filmo_default = createScraper(filmoSite);
 
+// src/sites/movienestbd.mts
+var SITE9 = "https://movienestbd.best/";
+var TIMEOUT_MS12 = 15e3;
+var QUALITY_ORDER2 = ["1080P", "720P", "480P"];
+var slugify2 = (text) => text.toLowerCase().replace(/&/g, "and").replace(/['’]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+async function getText4(ctx, url, referer = SITE9) {
+  try {
+    const response = await ctx.fetch(url, { headers: { Referer: referer }, signal: AbortSignal.timeout(TIMEOUT_MS12) });
+    return response.ok ? await response.text() : null;
+  } catch {
+    return null;
+  }
+}
+function pageLinks(page) {
+  const links = [...page.matchAll(/link:\s*"https:\\\/\\\/jiofiles\.[a-z]+\\\/([0-9a-f]{16,})",\s*quality:\s*"([^"]*)"/g)].map(([, id, quality]) => ({ id, rank: QUALITY_ORDER2.indexOf(quality.toUpperCase()) }));
+  links.sort((a, b) => (a.rank < 0 ? 99 : a.rank) - (b.rank < 0 ? 99 : b.rank));
+  return [...new Set(links.map((link) => link.id))];
+}
+var movienestbdSite = {
+  id: "movienestbd",
+  name: "MovieNestBD",
+  referrer: SITE9,
+  maxQuality: "1080p",
+  async *httpCaptures({ match }, ctx) {
+    if (match.mediaType !== "movie") return;
+    const search = await getText4(ctx, `${SITE9}search?q=${encodeURIComponent(match.title)}`);
+    if (!search) return;
+    const wanted = slugify2(match.title);
+    const slugs = [...new Set([...search.matchAll(/href="\/([a-z0-9-]+)"[^>]*class="movie-card/g)].map(([, slug]) => slug))].filter((slug) => slug === wanted || slug.startsWith(`${wanted}-`)).sort((a, b) => Number(b === wanted) - Number(a === wanted)).slice(0, 3);
+    for (const slug of slugs) {
+      const page = await getText4(ctx, `${SITE9}${slug}`);
+      if (!page) continue;
+      const heading = /<title>([^<]*)/.exec(page)?.[1] ?? "";
+      const named = /^(.*?)\s*\((\d{4})\)/.exec(heading);
+      if (!named || slugify2(named[1]) !== wanted) continue;
+      if (match.year && Math.abs(Number(named[2]) - match.year) > 1) continue;
+      for (const id of pageLinks(page)) {
+        const embed = await getText4(ctx, `https://embed.jiofiles.pics/${id}`);
+        const player = embed && /indbd\.pages\.dev\/embed\/([^/"'\s]+)\/([^/"'\s?]+)/.exec(embed);
+        if (!player) continue;
+        const [, host, video] = player;
+        const body = await getText4(ctx, `https://indbd.pages.dev/api/info?url=${encodeURIComponent(host)}&id=${encodeURIComponent(video)}`);
+        if (!body) continue;
+        let info;
+        try {
+          info = JSON.parse(body);
+        } catch {
+          continue;
+        }
+        if (!info.success || !info.data) continue;
+        const referrer = info.referer ?? `https://${host}/`;
+        if (info.data.cfNativeDirect) yield { mediaUrl: info.data.cfNativeDirect, referrer };
+      }
+      return;
+    }
+  }
+};
+var movienestbd_default = createScraper(movienestbdSite);
+
 // src/index.mts
-var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default, xpass_default, arc018_default, filmo_default].map((scraper) => ({ ...scraper, version: "1.23.1" }));
+var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default, xpass_default, arc018_default, filmo_default, movienestbd_default].map((scraper) => ({ ...scraper, version: "1.24.0" }));
 var index_default = scrapers;
