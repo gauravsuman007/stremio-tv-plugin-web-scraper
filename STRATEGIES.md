@@ -146,6 +146,19 @@ German, movies only; a Laravel site. `GET /search/suggest?q=` -> `{movies:[{titl
 
 Bengali/Hindi-dub catalogue, plain HTTP, no key. `GET /search?q=<title>` -> `<a href="/<slug>" class="movie-card ...">`; the title page's `<title>` is `Name (Year) ...` and its inline `rawLinks` array has `{link: "https:\/\/jiofiles.pics\/<24hex>", quality: "1080P"}` per quality. `jiofiles.pics/<id>` is an obfuscated React app that renders nothing headless -- use `https://embed.jiofiles.pics/<id>` instead: plain HTML with an iframe `indbd.pages.dev/embed/<host>/<vid>`. `GET https://indbd.pages.dev/api/info?url=<host>&id=<vid>` (no headers) -> `{referer, data:{cfNativeDirect, hlsVideoTiktok, sourceDirect, ...}}`. `cfNativeDirect` is `https://<host>/v4/pl/.../master.<ver>.m3u8?k=&kx=` (kx = expiry, ~6h ahead); its children carry the query themselves and segments are absolute fMP4 on `stn.professionalidentity.cyou`. All need `Referer: https://<host>/` (403 without). Verified 2026-09-30 with ffmpeg: video leaf and English audio playlist each decode 8s; ~350 KB/s per connection. `hlsVideoTiktok` -- and occasionally the cf master itself -- lists `p16/p19-ad-site-sign-sg.tiktokcdn.com` "images": MPEG-TS behind a 120-byte PNG header (ffmpeg's probe sees PNG), so it is not offered. Series pages carry season packs (`rawEpisodes` empty), not episodes: not served. `sourceDirect` is a bare-IP host, not tried.
 
+## Upstream players behind the untriaged front-ends (2026-09-30)
+
+What the embeds named in SOURCES.md's untriaged rows turned out to be, so a front-end listing only these is covered or stuck:
+- `111movies.net/movie/<tmdb>` iframes `player.vidlove.cc` -- covered by `vidlove`.
+- `vaplayer.ru/embed/movie/<tmdb>` iframes `nextgencloudfabric.com` -- vidnest's CDN, covered by `vidnest`.
+- `embed.filmu.in` -- Bingr's own player (its allowlist names bingr.live); see Bingr in SOURCES.md.
+- `mappletv.uk` redirects to `mapple.fun/watch/movie/<tmdb>`: first call `POST /api/request-token` -> a JWT; no stream request followed in 20 s headless. Not followed further.
+- `peachify.top`, `1embed.cc`, `multiembed.mov` (-> `streamingnow.mov`): Cloudflare challenge on the embed itself (403 "Attention Required" / "Just a moment").
+- `cinemaos.tech/player/<tmdb>` 500s; `megaplay.buzz/stream/...` answers an "Error" page.
+- `vidfast`: see its SOURCES.md row.
+
+Tooling note for this container: Chromium only works reliably through the agent proxy when it is passed explicitly -- `chromium.launch({ proxy: { server: process.env.HTTPS_PROXY }, args: ["--disable-http2", "--disable-quic"] })` and `ignoreHTTPSErrors`; without it most navigations fail with `ERR_TOO_MANY_RETRIES`. A blind sweep of the 88 untriaged front-ends (guessing `/watch/movie/<tmdb>` etc. and clicking) captured no media request on any of them: their players mount only on real interaction, so each needs its own look.
+
 ## vidzee  (status: rejected -- redundant)
 
 `core.vidzee.wtf/streams/movie/{id}?s={server}&e=1` returns `{"c": "<encrypted>"}` (server `ipcloud` gave an HLS master on `cdn1.ngcorp.dad`, the same Atlas CDN whose segments are 403 "domain forbidden"). The plain call with `s=dcloud` returned 502. Its useful output is available more simply from vidrock (same sources) and vidnest's `vidzee` route (a single MKV that timed out). No further work justified.
