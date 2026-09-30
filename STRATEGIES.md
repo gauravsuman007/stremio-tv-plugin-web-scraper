@@ -275,3 +275,15 @@ Repeated again on the Basement fork (basementx.lol) with the same movie: it surf
 - cinefork.net: surfaced `cdn.reelvault.click/movie_{tmdb}/vod.m3u8` -- the domain doesn't resolve (NXDOMAIN) at all, so this "source" is simply broken on their own site. Its other backend (`/api/ext/nest/...`) is vidnest's `yflix` upstream, already noted above as PNG-segment/not real video.
 
 Six forks in, the easy wins from this method are exhausted: what's left needs either reverse-engineering a heavier client (videasy's Next.js bundle) or chasing domains that don't even resolve. Diminishing returns; stop here unless a genuinely new fork surfaces.
+
+## vidfast.vc (status: blocked, researched 2026-09-30)
+
+Not built. Recorded so the research isn't repeated.
+
+- `vidfast.pro` redirects to `vidfast.vc`, a Next.js app. The title page (`/movie/<tmdb>`, `/tv/<tmdb>/<s>/<e>`) carries an `en` token in its flight data.
+- Chunk `365-<hash>.js` (~2 MB, obfuscated) holds several JS bytecode VMs. One of them seals `en` into the request path; another runs a devtools detector (it times a `console.table` call), which trips under Playwright's console hook and leaves the page stuck on "FETCHING".
+- Server list: `POST https://vidfast.vc/<long rotating base path>/imtoz/<id>/<sealed en>` with a fixed `X-Csrf-Token`. Streams: `POST .../imtoz/<other id>/<server.data>`.
+- Responses are base64 AES-256-GCM (`salt16 ‖ iv12 ‖ ciphertext ‖ tag16`); the key derives from a per-deploy constant and the salt, and the plaintext is an 8-byte timestamp followed by JSON.
+- Streams seen: a `moon.zenoak.top` master playlist up to 4K, needing `Referer`/`Origin: https://vidfast.vc`.
+- Blocker: the request seal's outer encoding lives inside the bytecode VM. Hand-built requests get HTTP 500. The base path, ids, CSRF token and all crypto constants rotate with each deploy, so any rebuilt seal would break on the next release.
+- Decision: the VM is a purpose-built anti-scraping measure; defeating it (or auto-tracking its rotations) is out of scope for this repo. vidfast is widely embedded by other sites (see SOURCES.md), so prefer those sites' other servers.
