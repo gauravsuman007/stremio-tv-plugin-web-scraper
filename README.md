@@ -1,7 +1,7 @@
 # stremio-tv-plugin-web-scraper
 
 Web-link scrapers for several streaming sites (CineJoy, Flixer, bCine, Movy,
-ShuttleTV, 7Movies, Cinezo, MoviesAPI, Vidrock, VixSrc, Atlantic, Vidlove, Vidnest, Rivestream, LookMovie, Aether, XPass, arc018, Filmo): each searches its site for a title and returns
+ShuttleTV, 7Movies, Cinezo, MoviesAPI, Vidrock, VixSrc, Atlantic, Vidlove, Vidnest, Rivestream, LookMovie, Aether, XPass, arc018, Filmo, MovieNestBD): each searches its site for a title and returns
 the best direct, per-quality video link, ready to be handed to a player.
 They ship as one package, `streaming-sites`, for `stremio-tv-plugin-web-links`.
 
@@ -68,6 +68,7 @@ and then.
 | XPass | play.xpass.top (1Shows' "Premium embeds") | 1080p | No browser: the server list is AES-256-GCM with a key hashed from the request's own path and token. VIP (1x2.space) and LUL servers. 2s. |
 | arc018 | arc018.stream (also BFLIX's backend) | 1080p | No browser: page token -> `ajax.php` -> Byse (challenge, ECDSA attest, proof of work, AES-GCM playback; `src/byse.mts`) and Vidmoly. Movies and TV, mostly 720p. 2-5s. |
 | Filmo | filmo.to | 1080p | No browser: German site, movies only; VOE (`src/voe.mts`) and Byse mirrors per language (English/German). 8-10s. |
+| MovieNestBD | movienestbd.best | 1080p | No browser: Hindi-dub catalogue, movies only; one master with Hindi+English audio (`indbd.pages.dev/api/info`). ~6s. |
 
 Checked and left out:
 - watch.spencerdevs.xyz plays in a browser, but its CDN returns 403 to any
