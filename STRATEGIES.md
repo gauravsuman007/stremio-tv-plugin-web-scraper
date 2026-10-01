@@ -276,9 +276,9 @@ Repeated again on the Basement fork (basementx.lol) with the same movie: it surf
 
 Six forks in, the easy wins from this method are exhausted: what's left needs either reverse-engineering a heavier client (videasy's Next.js bundle) or chasing domains that don't even resolve. Diminishing returns; stop here unless a genuinely new fork surfaces.
 
-## vidfast.vc (status: blocked, researched 2026-09-30)
+## vidfast.vc (status: implemented in 1.25.0 -- `src/vidfast.mts` + `src/sites/vidfast.mts`; needs web-links >= 0.9.0 for `Origin`)
 
-Not built. Recorded so the research isn't repeated.
+Researched 2026-09-30; first recorded as blocked because the request seal lives in a bytecode VM, then shipped on 2026-10-01 by running the site's own player code in a restricted `node:vm` (the maintainer's decision; the safeguards are in AGENTS.md, "Running a site's own code"). The research notes below are why a native reimplementation was rejected; the last subsection says how the shipped engine works.
 
 - `vidfast.pro` redirects to `vidfast.vc`, a Next.js app. The title page (`/movie/<tmdb>`, `/tv/<tmdb>/<s>/<e>`) carries an `en` token in its flight data.
 - Chunk `365-<hash>.js` (~2 MB, obfuscated) holds several JS bytecode VMs. One of them seals `en` into the request path; another runs a devtools detector (it times a `console.table` call), which trips under Playwright's console hook and leaves the page stuck on "FETCHING".
@@ -295,3 +295,14 @@ Running the real bundle in a Node `vm` sandbox (webpack runtime over the downloa
 - Request seal: AES-256-CBC of `random16 ‖ 8 bytes (1bd04ff4a0010000) ‖ en`, **key and IV constant across runs** (`a52f4b11…107a`, `9457df91…6f44` for this deploy), then the VM's own base64 alphabet substitution (`encode`, a permuted base64url table). Response: AES-256-GCM via a SHA-256 chain seeded from the random16 and a constant.
 - Stream call: `POST <base>/<segment from string table index 506>/<server.data>` with the `X-Csrf-Token`; the body is another sealed script that the `cq` bytecode VM executes to produce `{url, tracks, ...}`. Servers seen for Inception: vRapid/vBlaze (`moon.zenoak.top/vd*/.../master.m3u8`), Cobra (`moon.zenoak.top/s/...m3u8`), Bravo (IP-bound `luxki440das.com` token); Cine/Horizon 404.
 - The CBC key/IV are not a plain hash of the host, path, CSRF token, build id or segment names, and appear nowhere in the JS or HTML; they exist only inside the XOR'd bytecode. A native scraper therefore needs either the bytecode decoded statically (a reimplemented interpreter for a purpose-built anti-scraping VM) or the site's VM executed, which AGENTS.md forbids in a shipped scraper. Status stays `blocked`.
+
+#### How the shipped engine works (1.25.0)
+
+1. `GET /movie/<tmdb>` (or `/tv/<tmdb>/<s>/<e>`) with a browser User-Agent (the default Node UA gets a 403). Read the `en` token from the flight data and the same-origin `/_next/static/chunks/*.js` script URLs (skip `webpack-`, `polyfills-`, `main-app-`, `app/`).
+2. Download those chunks and run them in a `node:vm` context against a mini webpack runtime: `self.webpackChunk_N_E.push([ids, modules])` collects the module functions, a hand-written `require` evaluates the player module on demand.
+3. The player module is the one whose source contains `({crypto:X,encode:Y,server:` -- the server-list program is the function called there; the stream program is the one called at `({dr:`. The module's own `Buffer`/crypto/encode references are read off those object literals. The module source is patched at its closing brace to export `{list, stream, crypto, encode, buffer, str}` onto the sandbox global.
+4. Server list: call the list program with the browser-ish globals plus `{crypto, encode, Buffer, en, server: undefined, setServers, setState, setFavServer, fetch}`; it POSTs the sealed token itself through the sandbox `fetch` (same-origin only) and calls `setServers([{name, data, description}])`.
+5. Stream: `POST <base>/<segment>/<server.data>` with the CSRF header, where `<base>` and the CSRF header are literals in the effect that holds `fetch("".concat("/<base>","/").concat(<alias>(<index>),"/").concat(<x>.data)` and `<segment>` is the string-table reader (the alias's `a=<fn>` assignment) called with that index. The body is a script; pass it as `rs` to the stream program with `dr: []`; `dr[0]` is `{url, tracks, mp4, ...}`.
+6. The links need `Referer` and `Origin` `https://vidfast.vc`. vRapid and vBlaze decode (8 s of 2160p through ffmpeg); Cobra and Bravo are flaky from here; Cine and Horizon are empty.
+
+Anti-automation checks the VM runs and what passes them: `navigator.webdriver === false`, no `__nightmare`/`_phantom`/`__selenium*`/`__webdriver*`/`$cdc_*`/`__playwright*`/`__puppeteer*` globals, `window.crypto` present (without it the program returns silently), native-looking `createElement`/`requestAnimationFrame`, `window.parent.postMessage`, a silent `console` (it times `console.table`). Timings: page + 6 chunks ~1.5 s, module load ~0.2 s, server list ~1 s, each stream ~0.3 s; the built runtime is cached 6 h per script set. What returns `null`: a missing anchor (`({crypto:`, `({dr:`, `fetch("".concat("/`), a changed `en` key, a changed check list (the list program then calls `setState` with an error code and no servers), or the CDN refusing the links.

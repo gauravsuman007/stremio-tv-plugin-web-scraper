@@ -33,7 +33,6 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | vidzee (player.vidzee.wtf / core.vidzee.wtf) | rejected | Redundant: its working output is vidrock's (Atlas CDN, whose segments are 403 "domain forbidden") and vidnest's MKV route. |
 | vidlink.pro | possible | Id minted by a Go WASM module (`fu.wasm` + libsodium); streams are moviebox MP4 files via `noon.mooncase.online`. Needs a BrowserSite and MP4/`file` support in `pickBestCapture`. Low priority. See STRATEGIES.md. |
 | videasy.net / videasy.to | untriaged | Direct embed captured nothing in 24s; loading player.videasy.to directly gets 403 (checks the caller). Via vidnest it resolves to the nextgencloudfabric CDN with signed segments that answered 403. Watching a P-Stream fork (basementx.lol) that embeds it: the real master (moon.quietridge.top/vd/.../index-s2160p...m3u8, full length, 2160p) plays with Origin/Referer player.videasy.to, but the fork reaches it through its own backend (be.basementx.lol / dim.basementx.lol), which signs a `sig`+`exp` per request -- not reproducible without that private key. Not a candidate. |
-| vidfast.pro / .vc | blocked | 2026-09-30: `.pro` redirects to `vidfast.vc` (Next.js). Requests are sealed by an obfuscated bytecode VM in chunk `365-*.js` whose constants rotate per deploy; not pursued further (deliberate anti-scraping protection). See STRATEGIES.md "vidfast.vc". |
 | vidup.to | untriaged | No stream captured in 24s. |
 | 2embed (2embed.skin) | untriaged | No stream captured in 24s. |
 | peachify.top | rejected | Cloudflare challenge on the embed; its API host (`x.eat-peach.sbs`) answered 522. |
@@ -49,7 +48,7 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | viduki.net | possible | 1Shows' own player (`api.viduki.net/main/<type>/<id>?srv=`, altcha challenge + `makima` wasm + `pepper-key`). Its stream is the hunts439kow `i-arch-400` encode (640x266..1920x800), the same files as vidlove's vidapi, so not pursued. |
 | vidy.st | implemented | Covered by movy: it calls `api.wecollege.net/miami/sources` with movy's seed scheme. |
 
-## Implemented (17)
+## Implemented (18)
 
 | Site | Section | Note |
 |---|---|---|
@@ -70,13 +69,14 @@ Most aggregators are front-ends over a handful of upstream players, so a scraper
 | [Filmo](https://filmo.to/) | dedicated-server | filmo -- 1.23.0; German site, movies only. VOE (src/voe.mts) and Byse mirrors per audio language (English/German), minted via `POST /n`. 720p-1080p |
 | [1Shows, 1Flex or 1Tube](http://1shows.bz) | multi-server | xpass -- 1.23.0; its "Premium embeds" server is play.xpass.top (AES-GCM server list, key = SHA-256 of path+token). Its other servers: viduki.net (own API, altcha + `makima` wasm; same hunts439kow encode as vidlove, not built), vidy.st (= movy's wecollege backend, covered), vidfast, vidlink, vidrock (covered), vidzee |
 | [MovieNestBD](https://movienestbd.best/) | dedicated-server | movienestbd -- 1.24.0; plain HTTP, movies only (series pages hold season packs). Page `rawLinks` -> `embed.jiofiles.pics/<id>` -> `indbd.pages.dev/api/info` -> `cfNativeDirect`, a signed master with Hindi+English `#EXT-X-MEDIA` audio, 1920x800. Segments ~350 KB/s (about 1.5x the 1080p bitrate) |
+| [VidFast](https://vidfast.vc/) | stream-aggregators | vidfast -- 1.25.0; the player's requests are sealed in a bytecode VM with per-deploy keys, so the scraper runs the site's own player code in a restricted `node:vm` (src/vidfast.mts, AGENTS.md "Running a site's own code"). Servers vRapid/vBlaze: 2160p master on `moon.zenoak.top` (Referer + Origin `vidfast.vc`); Cobra/Bravo intermittently 5xx/404; Cine/Horizon empty. Movies and TV. Also the upstream of other sites' "vidfast" servers |
 
 ## Candidates (verified, ready to build) (0)
 
 | Site | Section | Note |
 |---|---|---|
 
-## Blocked (works, but the host cannot play it yet) (1)
+## Blocked (works, but the host cannot play it yet) (0)
 
 | Site | Section | Note |
 |---|---|---|
