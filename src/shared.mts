@@ -279,6 +279,8 @@ export interface SiteBase {
     /** How long a link found for this site is handed out again without a
      *  fresh resolve, when its tokens live less than `LINK_MAX_AGE_MS`. */
     linkMaxAgeMs?: number;
+    /** Keep comparing servers after a 2160p one plays (up to the soft deadline) instead of stopping there: for a site whose servers are different CDNs, not the same stream twice. */
+    compareAll?: boolean;
     /** Cheap check run before anything else; false drops the site's rows. */
     available?(ctx: ScraperContext): Promise<boolean>;
 }
@@ -422,7 +424,7 @@ function collectCandidates(
 
         const onCandidate = (candidate: Candidate) => {
             candidates.push(candidate);
-            if (candidate.height >= BEST_POSSIBLE_HEIGHT) return finish(true);
+            if (candidate.height >= BEST_POSSIBLE_HEIGHT && !site.compareAll) return finish(true);
             softTimer ??= setTimeout(() => finish(true), Math.max(0, SOFT_DEADLINE_MS - (Date.now() - startedAt)));
         };
 

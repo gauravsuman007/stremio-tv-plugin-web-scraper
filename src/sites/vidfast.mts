@@ -10,7 +10,7 @@ import { openTitle } from "../vidfast.mts";
  */
 const ORIGIN = "https://vidfast.vc";
 /** Servers worth asking, in the order the site lists them; a title rarely has more than a few that play. */
-const MAX_SERVERS = 5;
+const MAX_SERVERS = 6;
 
 const vidfastSite: HttpSite = {
     id: "vidfast",
@@ -18,6 +18,7 @@ const vidfastSite: HttpSite = {
     referrer: `${ORIGIN}/`,
     headers: { Origin: ORIGIN },
     maxQuality: "4K",
+    compareAll: true,
     async *httpCaptures({ match, season, episode }, ctx): AsyncGenerator<Capture> {
         const path = match.mediaType === "movie" ? `/movie/${match.tmdbId}` : `/tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
         const session = await openTitle(ctx, path);

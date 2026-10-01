@@ -31,6 +31,8 @@ const SCRIPT_RUN_TIMEOUT_MS = 20_000;
 const MAX_SCRIPT_BYTES = 6_000_000;
 const MAX_SCRIPTS = 20;
 const RUNTIME_MAX_AGE_MS = 6 * 60 * 60_000;
+/** How long a title's server list is reused: vidfast answers 429 to a dozen list calls in a short while, and search then play asks twice. */
+const SESSION_MAX_AGE_MS = 4 * 60_000;
 /** The player module is the one that calls the server-list program. Found by `indexOf` on these anchors: regexes over a 2 MB minified module are slow. */
 const SERVER_LIST_ANCHOR = "({crypto:";
 const STREAM_ANCHOR = "({dr:";
@@ -61,6 +63,7 @@ interface Runtime {
 }
 
 let runtime: Runtime | null = null;
+const sessions = new Map<string, { at: number; session: VidfastSession }>();
 /** The player keeps module-level state, so one title is processed at a time. */
 let queue: Promise<unknown> = Promise.resolve();
 
@@ -221,6 +224,8 @@ function exclusive<T>(work: () => Promise<T>): Promise<T> {
  * or the sealed exchange isn't what this expects any more.
  */
 export async function openTitle(ctx: ScraperContext, path: string): Promise<VidfastSession | null> {
+    const kept = sessions.get(path);
+    if (kept && Date.now() - kept.at < SESSION_MAX_AGE_MS) return kept.session;
     const pageUrl = `${ORIGIN}${path}`;
     const html = await getText(ctx, pageUrl, `${ORIGIN}/`);
     const en = html && pageToken(html);
@@ -250,7 +255,7 @@ export async function openTitle(ctx: ScraperContext, path: string): Promise<Vidf
     const list = servers as VidfastServer[] | null;
     if (!list?.length) return null;
 
-    return {
+    const session: VidfastSession = {
         servers: list,
         stream: (server) => exclusive(async () => {
             const response = await ctx.fetch(`${ORIGIN}${request.base}/${request.segment}/${server.data}`, {
@@ -267,4 +272,7 @@ export async function openTitle(ctx: ScraperContext, path: string): Promise<Vidf
             return found && typeof found.url === "string" && /^https?:/.test(found.url) ? found : null;
         })
     };
+    sessions.set(path, { at: Date.now(), session });
+    for (const [key, entry] of sessions) if (Date.now() - entry.at > SESSION_MAX_AGE_MS) sessions.delete(key);
+    return session;
 }
