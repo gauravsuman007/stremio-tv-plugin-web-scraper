@@ -1,7 +1,9 @@
 "use strict";
+var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __export = (target, all) => {
   for (var name in all)
@@ -15,6 +17,14 @@ var __copyProps = (to, from, except, desc) => {
   }
   return to;
 };
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
 // src/index.mts
@@ -232,7 +242,7 @@ function collectCandidates(site, captures, match, ctx, deadlineMs) {
     const hardTimer = setTimeout(() => finish(false), deadlineMs);
     const onCandidate = (candidate) => {
       candidates.push(candidate);
-      if (candidate.height >= BEST_POSSIBLE_HEIGHT) return finish(true);
+      if (candidate.height >= BEST_POSSIBLE_HEIGHT && !site.compareAll) return finish(true);
       softTimer ??= setTimeout(() => finish(true), Math.max(0, SOFT_DEADLINE_MS - (Date.now() - startedAt)));
     };
     void (async () => {
@@ -1819,12 +1829,323 @@ var filmoSite = {
 };
 var filmo_default = createScraper(filmoSite);
 
+// src/vidfast.mts
+var import_node_vm = __toESM(require("node:vm"), 1);
+var ORIGIN = "https://vidfast.vc";
+var USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+var REQUEST_TIMEOUT_MS = 2e4;
+var SCRIPT_RUN_TIMEOUT_MS = 2e4;
+var MAX_SCRIPT_BYTES = 6e6;
+var MAX_SCRIPTS = 20;
+var RUNTIME_MAX_AGE_MS = 6 * 60 * 6e4;
+var SESSION_MAX_AGE_MS = 4 * 6e4;
+var SERVER_LIST_ANCHOR = "({crypto:";
+var STREAM_ANCHOR = "({dr:";
+var STREAM_FETCH_ANCHOR = 'fetch("".concat("/';
+var STREAM_FETCH = /^fetch\(""\.concat\("(\/[^"]+)","\/"\)\.concat\((?:(\w+)\((\d+)\)|"([A-Za-z0-9_-]{6,})"),"\/"\)\.concat\(\w+\.data\),\{[^}]*?method:"POST",headers:\{\.\.\.JSON\.parse\('(\{[^']+\})'\)/;
+function nameBefore(source, index) {
+  return /(\w+)$/.exec(source.slice(Math.max(0, index - 40), index))?.[1];
+}
+var runtime = null;
+var sessions = /* @__PURE__ */ new Map();
+var queue = Promise.resolve();
+var noop = () => void 0;
+var element = () => new Proxy(function() {
+}, { get: (_t, key) => key === "style" ? {} : key === Symbol.toPrimitive ? () => "" : element(), apply: () => element(), set: () => true });
+var HOST_GLOBALS = [
+  "TextEncoder",
+  "TextDecoder",
+  "URL",
+  "URLSearchParams",
+  "AbortController",
+  "AbortSignal",
+  "EventTarget",
+  "Event",
+  "CustomEvent",
+  "Buffer",
+  "atob",
+  "btoa",
+  "structuredClone",
+  "queueMicrotask",
+  "setTimeout",
+  "clearTimeout",
+  "setInterval",
+  "clearInterval",
+  "performance",
+  "crypto",
+  "Blob",
+  "FileReader",
+  "ReadableStream",
+  "WritableStream",
+  "TransformStream",
+  "MessageChannel",
+  "BroadcastChannel",
+  "Headers",
+  "Request",
+  "Response",
+  "FormData"
+];
+async function getText4(ctx, url, referer) {
+  const response = await ctx.fetch(url, { headers: { "User-Agent": USER_AGENT, Referer: referer }, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  if (!response.ok) return null;
+  const text = await response.text();
+  return text.length > MAX_SCRIPT_BYTES ? null : text;
+}
+function pageToken(html) {
+  return /\\?"en\\?":\\?"([A-Za-z0-9_-]{40,})/.exec(html)?.[1] ?? null;
+}
+function scriptUrls(html) {
+  const urls = /* @__PURE__ */ new Set();
+  for (const match of html.matchAll(/<script[^>]+src="([^"]+)"/g)) {
+    const url = new URL(match[1], ORIGIN);
+    if (url.origin !== ORIGIN || !url.pathname.startsWith("/_next/static/chunks/")) continue;
+    if (/\/(webpack|polyfills|main-app)-|\/app\//.test(url.pathname)) continue;
+    urls.add(url.href);
+  }
+  return [...urls].slice(0, MAX_SCRIPTS);
+}
+async function buildRuntime(ctx, urls, key) {
+  const texts = await Promise.all(urls.map((url) => getText4(ctx, url, `${ORIGIN}/`).catch(() => null)));
+  const modules = {};
+  const sandbox = {
+    console: { log: noop, warn: noop, error: noop, debug: noop, info: noop, table: noop, clear: noop, trace: noop },
+    navigator: { userAgent: USER_AGENT, platform: "Linux x86_64", language: "en-US", languages: ["en-US"], webdriver: false, vendor: "Google Inc.", maxTouchPoints: 0, hardwareConcurrency: 8, cookieEnabled: true, onLine: true, plugins: { length: 5 } },
+    screen: { width: 1920, height: 1080 },
+    innerWidth: 1920,
+    innerHeight: 1080,
+    name: "",
+    chrome: { runtime: {} },
+    localStorage: { getItem: () => null, setItem: noop, removeItem: noop },
+    matchMedia: () => ({ matches: false, addEventListener: noop, removeEventListener: noop, addListener: noop }),
+    addEventListener: noop,
+    removeEventListener: noop,
+    VTTCue: class {
+      constructor(startTime, endTime, text) {
+        this.startTime = startTime;
+        this.endTime = endTime;
+        this.text = text;
+      }
+    }
+  };
+  for (const name of HOST_GLOBALS) sandbox[name] = globalThis[name];
+  const native = (name, fn) => Object.defineProperty(fn.bind(null), "name", { value: name });
+  sandbox.requestAnimationFrame = native("requestAnimationFrame", (callback) => setTimeout(() => callback(Date.now()), 16));
+  sandbox.cancelAnimationFrame = native("cancelAnimationFrame", (id) => clearTimeout(id));
+  sandbox.document = {
+    createElement: native("createElement", () => element()),
+    querySelector: () => element(),
+    querySelectorAll: () => [],
+    addEventListener: noop,
+    removeEventListener: noop,
+    getElementsByTagName: () => [],
+    head: element(),
+    body: element(),
+    documentElement: element(),
+    cookie: "",
+    referrer: `${ORIGIN}/`,
+    currentScript: null
+  };
+  sandbox.parent = { postMessage: noop };
+  sandbox.top = sandbox.parent;
+  sandbox.opener = null;
+  sandbox.location = new URL(`${ORIGIN}/`);
+  sandbox.self = sandbox.window = sandbox.globalThis = sandbox;
+  sandbox.webpackChunk_N_E = { push(chunk) {
+    Object.assign(modules, chunk[1]);
+  } };
+  const context = import_node_vm.default.createContext(sandbox, { codeGeneration: { strings: true, wasm: false } });
+  texts.forEach((text, i) => {
+    if (!text) return;
+    try {
+      import_node_vm.default.runInContext(text, context, { filename: urls[i], timeout: SCRIPT_RUN_TIMEOUT_MS });
+    } catch {
+    }
+  });
+  const sources = /* @__PURE__ */ new Map();
+  const playerId = Object.keys(modules).find((id) => {
+    const source = modules[id].toString();
+    sources.set(id, source);
+    const at = source.indexOf(SERVER_LIST_ANCHOR);
+    return at >= 0 && /^\(\{crypto:\w+,encode:\w+,server:/.test(source.slice(at, at + 80));
+  });
+  if (!playerId) return null;
+  const original = sources.get(playerId);
+  const listAt = original.indexOf(SERVER_LIST_ANCHOR);
+  const streamAt = original.indexOf(STREAM_ANCHOR);
+  const listFn = nameBefore(original, listAt);
+  const streamFn = streamAt >= 0 ? nameBefore(original, streamAt) : void 0;
+  const refs = /^\(\{crypto:(\w+),encode:(\w+),server:/.exec(original.slice(listAt, listAt + 80));
+  const bufferRef = streamAt >= 0 ? /Buffer:(\w+),atob:/.exec(original.slice(streamAt, streamAt + 4e3))?.[1] : void 0;
+  let fetchAt = original.indexOf(STREAM_FETCH_ANCHOR);
+  let call = null;
+  while (fetchAt >= 0 && !(call = STREAM_FETCH.exec(original.slice(fetchAt, fetchAt + 600)))) fetchAt = original.indexOf(STREAM_FETCH_ANCHOR, fetchAt + 1);
+  if (!listFn || !refs || !streamFn || !bufferRef || !call) return null;
+  const [, cryptoRef, encodeRef] = refs;
+  const [, base, aliasName, index, literal, csrf] = call;
+  const reader = aliasName ? [...original.slice(Math.max(0, fetchAt - 3e4), fetchAt).matchAll(new RegExp(`[,{ ]${aliasName}=(\\w{2,})[;,]`, "g"))].pop()?.[1] : void 0;
+  if (!literal && !reader) return null;
+  const patched = import_node_vm.default.runInContext(`(${original.replace(/\}$/, `;globalThis.__vf={list:${listFn},stream:${streamFn},crypto:${cryptoRef},encode:${encodeRef},buffer:${bufferRef}${reader ? `,str:${reader}` : ""}}}`)})`, context);
+  const cache = {};
+  const require2 = (id) => {
+    if (cache[id]) return cache[id].exports;
+    const module2 = cache[id] = { exports: {} };
+    const fn = id === playerId ? patched : modules[id];
+    if (!fn) throw new Error(`missing module ${id}`);
+    fn.call(module2.exports, module2, module2.exports, require2);
+    return module2.exports;
+  };
+  const define = (target, definition) => {
+    for (const k of Object.keys(definition)) if (!Object.prototype.hasOwnProperty.call(target, k)) Object.defineProperty(target, k, { enumerable: true, get: definition[k] });
+  };
+  Object.assign(require2, {
+    d: define,
+    r: (target) => {
+      Object.defineProperty(target, Symbol.toStringTag, { value: "Module" });
+      Object.defineProperty(target, "__esModule", { value: true });
+    },
+    n: (m) => {
+      const getter = () => m && m.__esModule ? m.default : m;
+      define(getter, { a: getter });
+      return getter;
+    },
+    o: (o, k) => Object.prototype.hasOwnProperty.call(o, k),
+    g: sandbox,
+    nmd: (m) => m,
+    e: () => Promise.resolve(),
+    u: (x) => x,
+    p: "/_next/",
+    miniCssF: () => "",
+    l: noop,
+    h: () => "x",
+    t: (v) => v
+  });
+  try {
+    require2(playerId);
+  } catch {
+    return null;
+  }
+  const entry = sandbox.__vf;
+  if (!entry) return null;
+  const segment = literal ?? entry.str?.(Number(index));
+  if (!segment) return null;
+  return { key, builtAt: Date.now(), sandbox, context, entry, request: { base, headers: JSON.parse(csrf), segment } };
+}
+function sandboxFetch(ctx, referer) {
+  return (input, init = {}) => {
+    const url = new URL(String(input), ORIGIN);
+    if (url.origin !== ORIGIN) return Promise.reject(new TypeError("blocked host"));
+    return ctx.fetch(url.href, { ...init, headers: { "User-Agent": USER_AGENT, Referer: referer, ...init.headers }, signal: init.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  };
+}
+function programGlobals(rt, extra) {
+  const make = import_node_vm.default.runInContext(`(function (host) { return Object.assign({
+        window, document, navigator, localStorage, console, screen, JSON, Math, Date, RegExp, Map, Set, WeakMap, WeakSet, Array, Object, Number, String, Boolean, Symbol, Function,
+        Error, TypeError, RangeError, SyntaxError, parseInt, parseFloat, isNaN, isFinite, encodeURIComponent, decodeURIComponent, NaN, Infinity, undefined, Promise, Proxy, Reflect,
+        Uint8Array, Int8Array, Uint16Array, Int16Array, Uint32Array, Int32Array, Float32Array, Float64Array, BigInt,
+        TextEncoder, TextDecoder, URL, URLSearchParams, AbortSignal, AbortController, atob, btoa
+    }, host); })`, rt.context);
+  return make(extra);
+}
+function exclusive(work) {
+  const run = queue.then(work, work);
+  queue = run.catch(() => void 0);
+  return run;
+}
+async function openTitle(ctx, path) {
+  const kept = sessions.get(path);
+  if (kept && Date.now() - kept.at < SESSION_MAX_AGE_MS) return kept.session;
+  const pageUrl = `${ORIGIN}${path}`;
+  const html = await getText4(ctx, pageUrl, `${ORIGIN}/`);
+  const en = html && pageToken(html);
+  if (!html || !en) return null;
+  const urls = scriptUrls(html);
+  if (!urls.length) return null;
+  const key = urls.join("|");
+  if (!runtime || runtime.key !== key || Date.now() - runtime.builtAt > RUNTIME_MAX_AGE_MS) {
+    runtime = null;
+    runtime = await buildRuntime(ctx, urls, key);
+    if (!runtime) return null;
+  }
+  const rt = runtime;
+  const { entry, request } = rt;
+  let servers = null;
+  await exclusive(async () => {
+    rt.sandbox.location = new URL(pageUrl);
+    const host = programGlobals(rt, {
+      crypto: entry.crypto,
+      encode: entry.encode,
+      Buffer: entry.buffer,
+      en,
+      server: void 0,
+      setServers: (list2) => {
+        servers = list2;
+      },
+      setState: (x) => console.error("STATE", x),
+      setFavServer: noop,
+      fetch: sandboxFetch(ctx, `${ORIGIN}/`)
+    });
+    try {
+      await entry.list(host);
+    } catch (e) {
+      console.error("LISTERR", e);
+    }
+  });
+  const list = servers;
+  if (!list?.length) return null;
+  const session = {
+    servers: list,
+    stream: (server) => exclusive(async () => {
+      const response = await ctx.fetch(`${ORIGIN}${request.base}/${request.segment}/${server.data}`, {
+        method: "POST",
+        headers: { "User-Agent": USER_AGENT, Referer: pageUrl, ...request.headers },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+      });
+      if (!response.ok) return null;
+      const script = await response.text();
+      const result = [];
+      rt.sandbox.location = new URL(pageUrl);
+      try {
+        await entry.stream(programGlobals(rt, { dr: result, rs: script, crypto: entry.crypto, Buffer: entry.buffer, fetch: sandboxFetch(ctx, pageUrl) }));
+      } catch {
+        return null;
+      }
+      const found = result[0];
+      return found && typeof found.url === "string" && /^https?:/.test(found.url) ? found : null;
+    })
+  };
+  sessions.set(path, { at: Date.now(), session });
+  for (const [key2, entry2] of sessions) if (Date.now() - entry2.at > SESSION_MAX_AGE_MS) sessions.delete(key2);
+  return session;
+}
+
+// src/sites/vidfast.mts
+var ORIGIN2 = "https://vidfast.vc";
+var MAX_SERVERS = 6;
+var vidfastSite = {
+  id: "vidfast",
+  name: "VidFast",
+  referrer: `${ORIGIN2}/`,
+  headers: { Origin: ORIGIN2 },
+  maxQuality: "4K",
+  compareAll: true,
+  async *httpCaptures({ match, season, episode }, ctx) {
+    const path = match.mediaType === "movie" ? `/movie/${match.tmdbId}` : `/tv/${match.tmdbId}/${season ?? 1}/${episode ?? 1}`;
+    const session = await openTitle(ctx, path);
+    if (!session) return;
+    for (const server of session.servers.slice(0, MAX_SERVERS)) {
+      const stream = await session.stream(server).catch(() => null);
+      if (stream) yield { mediaUrl: stream.url, label: server.name };
+    }
+  }
+};
+var vidfast_default = createScraper(vidfastSite);
+
 // src/sites/movienestbd.mts
 var SITE9 = "https://movienestbd.best/";
 var TIMEOUT_MS12 = 15e3;
 var QUALITY_ORDER2 = ["1080P", "720P", "480P"];
 var slugify2 = (text) => text.toLowerCase().replace(/&/g, "and").replace(/['’]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-async function getText4(ctx, url, referer = SITE9) {
+async function getText5(ctx, url, referer = SITE9) {
   try {
     const response = await ctx.fetch(url, { headers: { Referer: referer }, signal: AbortSignal.timeout(TIMEOUT_MS12) });
     return response.ok ? await response.text() : null;
@@ -1844,23 +2165,23 @@ var movienestbdSite = {
   maxQuality: "1080p",
   async *httpCaptures({ match }, ctx) {
     if (match.mediaType !== "movie") return;
-    const search = await getText4(ctx, `${SITE9}search?q=${encodeURIComponent(match.title)}`);
+    const search = await getText5(ctx, `${SITE9}search?q=${encodeURIComponent(match.title)}`);
     if (!search) return;
     const wanted = slugify2(match.title);
     const slugs = [...new Set([...search.matchAll(/href="\/([a-z0-9-]+)"[^>]*class="movie-card/g)].map(([, slug]) => slug))].filter((slug) => slug === wanted || slug.startsWith(`${wanted}-`)).sort((a, b) => Number(b === wanted) - Number(a === wanted)).slice(0, 3);
     for (const slug of slugs) {
-      const page = await getText4(ctx, `${SITE9}${slug}`);
+      const page = await getText5(ctx, `${SITE9}${slug}`);
       if (!page) continue;
       const heading = /<title>([^<]*)/.exec(page)?.[1] ?? "";
       const named = /^(.*?)\s*\((\d{4})\)/.exec(heading);
       if (!named || slugify2(named[1]) !== wanted) continue;
       if (match.year && Math.abs(Number(named[2]) - match.year) > 1) continue;
       for (const id of pageLinks(page)) {
-        const embed = await getText4(ctx, `https://embed.jiofiles.pics/${id}`);
+        const embed = await getText5(ctx, `https://embed.jiofiles.pics/${id}`);
         const player = embed && /indbd\.pages\.dev\/embed\/([^/"'\s]+)\/([^/"'\s?]+)/.exec(embed);
         if (!player) continue;
         const [, host, video] = player;
-        const body = await getText4(ctx, `https://indbd.pages.dev/api/info?url=${encodeURIComponent(host)}&id=${encodeURIComponent(video)}`);
+        const body = await getText5(ctx, `https://indbd.pages.dev/api/info?url=${encodeURIComponent(host)}&id=${encodeURIComponent(video)}`);
         if (!body) continue;
         let info;
         try {
@@ -1879,5 +2200,5 @@ var movienestbdSite = {
 var movienestbd_default = createScraper(movienestbdSite);
 
 // src/index.mts
-var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default, xpass_default, arc018_default, filmo_default, movienestbd_default].map((scraper) => ({ ...scraper, version: "1.24.0" }));
+var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default, xpass_default, arc018_default, filmo_default, movienestbd_default, vidfast_default].map((scraper) => ({ ...scraper, version: "1.25.1" }));
 var index_default = scrapers;
