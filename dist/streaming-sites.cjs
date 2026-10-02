@@ -534,6 +534,33 @@ async function askServer(fetchImpl, path, payload) {
   const data = JSON.parse(new TextDecoder().decode(plain));
   return (data.data?.stream ?? []).filter((s) => s.playlist && (!s.type || s.type === "hls")).map((s) => s.playlist);
 }
+async function playsThrough(fetchImpl, mediaUrl) {
+  const headers2 = { Referer: `${BASE_URL}/` };
+  const text = async (url) => {
+    const r = await fetchImpl(url, { headers: headers2, signal: AbortSignal.timeout(TIMEOUT_MS3) });
+    if (!r.ok) throw new Error(String(r.status));
+    return r.text();
+  };
+  const uris = (playlist) => playlist.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+  try {
+    const master = await text(mediaUrl);
+    const rungs = master.includes("#EXT-X-STREAM-INF") ? uris(master).map((u) => new URL(u, mediaUrl).href) : [mediaUrl];
+    const checks = await Promise.all(rungs.map(async (rung) => {
+      const segments = uris(rung === mediaUrl ? master : await text(rung));
+      if (!segments.length) return false;
+      const picks = [.../* @__PURE__ */ new Set([0, segments.length >> 1, segments.length - 1])];
+      const oks = await Promise.all(picks.map(async (i) => {
+        const r = await fetchImpl(new URL(segments[i], rung).href, { headers: { ...headers2, Range: "bytes=0-0" }, signal: AbortSignal.timeout(TIMEOUT_MS3) });
+        await r.arrayBuffer().catch(() => void 0);
+        return r.ok;
+      }));
+      return oks.every(Boolean);
+    }));
+    return checks.every(Boolean);
+  } catch {
+    return false;
+  }
+}
 var cinejoySite = {
   id: "cinejoy",
   name: "CineJoy",
@@ -550,7 +577,9 @@ var cinejoySite = {
     const kind = match.mediaType === "movie" ? "movie" : "series";
     for (const server of servers) {
       const playlists = await askServer(ctx.fetch, `/${server.name}/${kind}`, payload).catch(() => []);
-      for (const mediaUrl of playlists) yield { mediaUrl, label: server.name };
+      for (const mediaUrl of playlists) {
+        if (await playsThrough(ctx.fetch, mediaUrl)) yield { mediaUrl, label: server.name };
+      }
     }
   }
 };
@@ -2200,5 +2229,5 @@ var movienestbdSite = {
 var movienestbd_default = createScraper(movienestbdSite);
 
 // src/index.mts
-var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default, xpass_default, arc018_default, filmo_default, movienestbd_default, vidfast_default].map((scraper) => ({ ...scraper, version: "1.25.1" }));
+var scrapers = [cinejoy_default, flixer_default, bciney_default, movy_default, shuttletv_default, movies_default, cinezo_default, moviesapi_default, vidrock_default, vixsrc_default, atlantic_default, vidlove_default, vidnest_default, rivestream_default, lookmovie_default, aetherlul_default, xpass_default, arc018_default, filmo_default, movienestbd_default, vidfast_default].map((scraper) => ({ ...scraper, version: "1.25.2" }));
 var index_default = scrapers;
