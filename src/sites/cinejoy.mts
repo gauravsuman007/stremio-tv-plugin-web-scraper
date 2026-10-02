@@ -106,6 +106,42 @@ async function askServer(fetchImpl: ScraperContext["fetch"], path: string, paylo
 }
 
 /**
+ * A playlist that lists segments proves nothing about the segments being
+ * there: Lisbon's CDN answers 502 "origin unavailable" for any segment it
+ * has not cached, so a title's 4K (sometimes 720p/360p) variant can list 746
+ * segments and serve two. hls.js starts on a low rung, ABR climbs to the dead
+ * one and playback dies. So every rung's first, middle and last segment is
+ * asked for (one byte) and a link with any dead rung is dropped.
+ */
+async function playsThrough(fetchImpl: ScraperContext["fetch"], mediaUrl: string): Promise<boolean> {
+    const headers = { Referer: `${BASE_URL}/` };
+    const text = async (url: string) => {
+        const r = await fetchImpl(url, { headers, signal: AbortSignal.timeout(TIMEOUT_MS) });
+        if (!r.ok) throw new Error(String(r.status));
+        return r.text();
+    };
+    const uris = (playlist: string) => playlist.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+    try {
+        const master = await text(mediaUrl);
+        const rungs = master.includes("#EXT-X-STREAM-INF") ? uris(master).map((u) => new URL(u, mediaUrl).href) : [mediaUrl];
+        const checks = await Promise.all(rungs.map(async (rung) => {
+            const segments = uris(rung === mediaUrl ? master : await text(rung));
+            if (!segments.length) return false;
+            const picks = [...new Set([0, segments.length >> 1, segments.length - 1])];
+            const oks = await Promise.all(picks.map(async (i) => {
+                const r = await fetchImpl(new URL(segments[i]!, rung).href, { headers: { ...headers, Range: "bytes=0-0" }, signal: AbortSignal.timeout(TIMEOUT_MS) });
+                await r.arrayBuffer().catch(() => undefined);
+                return r.ok;
+            }));
+            return oks.every(Boolean);
+        }));
+        return checks.every(Boolean);
+    } catch {
+        return false;
+    }
+}
+
+/**
  * Tries every up server, 4k-flagged ones first. The flag is site-wide, not
  * per title (a 4k-flagged mirror has served the same 1080p as a plain one),
  * but asking it first costs nothing: the caller compares what plays and stops
@@ -131,7 +167,9 @@ const cinejoySite: HttpSite = {
 
         for (const server of servers) {
             const playlists = await askServer(ctx.fetch, `/${server.name}/${kind}`, payload).catch(() => []);
-            for (const mediaUrl of playlists) yield { mediaUrl, label: server.name };
+            for (const mediaUrl of playlists) {
+                if (await playsThrough(ctx.fetch, mediaUrl)) yield { mediaUrl, label: server.name };
+            }
         }
     }
 };
